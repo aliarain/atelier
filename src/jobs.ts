@@ -1,4 +1,5 @@
 import {randomBytes} from 'node:crypto';
+import {readFileSync} from 'node:fs';
 import {mkdir, readdir, readFile, rename, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import type {Job, JobError, JobState, MediaOutput} from './types.ts';
@@ -154,6 +155,16 @@ export async function loadJobs(cwd: string): Promise<readonly Job[]> {
 	return jobs
 		.filter((job): job is Job => job !== undefined)
 		.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+// For synchronous host callbacks, such as drawing a chat row, that cannot await loadJob.
+export function loadJobSync(cwd: string, id: string): Job | undefined {
+	if (!/^[a-z0-9-]+$/.test(id)) return undefined;
+	try {
+		return parseJob(readFileSync(join(jobsDir(cwd), `${id}.json`), 'utf8'));
+	} catch {
+		return undefined;
+	}
 }
 
 export async function loadJob(cwd: string, id: string): Promise<Job | undefined> {

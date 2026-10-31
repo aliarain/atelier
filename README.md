@@ -55,6 +55,10 @@ Remove it with `cmd mods remove -g aliarain/atelier` (or the local path you inst
 
 The gallery shows every job as a tile and updates live. Filter buttons (All, Images, Videos, Audio) appear once there is more than one kind of work. Each tile has three actions: Variant asks the agent for another take on the same brief, Show in Finder reveals the output files, and Mark shown records the job as delivered.
 
+## In the chat
+
+In hosts that draw mod cards, `atelier_create` and `atelier_present` show up in the chat as cards instead of tool rows. While a piece renders you see what is being made and at what size. When it finishes you get a thumbnail, its size and length, a line of check results (all passed, or up to three issues in yellow or red) and an Open in gallery button. Delivered work appears as one card with your note and a large preview of each piece. Hosts without image support get the same card as plain text, and every other tool keeps its normal row. The thumbnails come from `preview.jpg`, which each render keeps in its job folder.
+
 ## Where things go
 
 Jobs and outputs live in the project under `.atelier/` (`jobs/<id>.json`, `out/<id>/`). A paid job interrupted mid-run becomes `uncertain` and is never re-run without asking.
@@ -62,6 +66,6 @@ Jobs and outputs live in the project under `.atelier/` (`jobs/<id>.json`, `out/<
 ## Develop
 
 ```bash
-pnpm test        # 201 tests, real Chrome, say and ffmpeg runs included
+pnpm test        # 220 tests, real Chrome, say and ffmpeg runs included
 pnpm typecheck   # needs a built Command Code checkout at ../commandcode
 ```

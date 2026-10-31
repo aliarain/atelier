@@ -11,10 +11,12 @@ import {
 	type GalleryHandle,
 	startGallery,
 } from './gallery.ts';
+import {type ToolRowProps, toolRowCard} from './feed-cards.ts';
 import {
 	atelierDir,
 	isPidAlive,
 	loadJob,
+	loadJobSync,
 	loadJobs,
 	markPresented,
 	saveJob,
@@ -31,7 +33,7 @@ import {
 } from './policy.ts';
 import {type ElementCapabilities, paneNodes, supportsStatus} from './pane.ts';
 import {reviewMedia} from './review.ts';
-import {previewOf, runJob} from './runner.ts';
+import {previewOf, readPreviewDataUrl, runJob} from './runner.ts';
 import type {Engine, Job, Review} from './types.ts';
 
 type ToolContent =
@@ -68,6 +70,11 @@ interface ViewUi {
 		readonly url: string;
 	}) => {dispose(): void};
 	readonly openView?: (id: string) => void;
+	// Hosts that draw tool rows natively accept a replacement; others lack the method.
+	readonly override?: (
+		slot: 'tool_row',
+		render: (props: ToolRowProps) => readonly unknown[] | undefined,
+	) => unknown;
 }
 
 const text = (value: string): ToolContent => ({type: 'text', text: value});
@@ -424,6 +431,21 @@ export default function atelier(cmd: ModApi): void {
 			};
 		},
 	});
+
+	if (typeof viewUi.override === 'function') {
+		viewUi.override('tool_row', props =>
+			toolRowCard(props, {
+				readPreview: jobId => readPreviewDataUrl(cmd.cwd, jobId),
+				readJob: jobId => loadJobSync(cmd.cwd, jobId),
+				// Read per paint: a host may fill its element list after the mod loads.
+				capabilities: viewUi.capabilities?.elements ?? [],
+				openGallery: async () => {
+					const handle = await revealGallery();
+					if (!viewUi.openView) await execFileExec({command: 'open', args: [handle.url]});
+				},
+			}),
+		);
+	}
 
 	cmd.ui.pane({
 		id: 'atelier',
