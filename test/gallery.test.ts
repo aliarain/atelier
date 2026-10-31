@@ -4,8 +4,9 @@ import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
+import {request as httpRequest} from 'node:http';
 import {runInNewContext} from 'node:vm';
-import {parseRange, route, startGallery} from '../src/gallery.ts';
+import {parseRange, route, type RouteRequest, startGallery} from '../src/gallery.ts';
 import {PAGE_HELPERS, PAGE_STYLE, renderIndexHtml} from '../src/gallery-page.ts';
 
 const TOKEN = 'secret-token';
@@ -33,8 +34,18 @@ const helpers = runInNewContext(
 ) as PageHelpers;
 const jobsIn = (...states: readonly string[]): readonly PageJob[] =>
 	states.map(state => ({state}));
-const get = (url: string) => ({method: 'GET', url});
-const post = (url: string) => ({method: 'POST', url});
+const PORT = 4321;
+const req = (method: string, url: string, extra: Partial<RouteRequest> = {}): RouteRequest => ({
+	method,
+	url,
+	port: PORT,
+	host: `127.0.0.1:${PORT}`,
+	origin: undefined,
+	contentType: undefined,
+	...extra,
+});
+const get = (url: string): RouteRequest => req('GET', url);
+const post = (url: string): RouteRequest => req('POST', url, {contentType: 'application/json'});
 
 test('route serves the index with a valid token', () => {
 	assert.deepEqual(route(get(`/?t=${TOKEN}`), TOKEN), {kind: 'index'});
@@ -84,7 +95,7 @@ test('route rejects a bad job id with 404', () => {
 test('route rejects unknown paths and non-GET methods with 404', () => {
 	const notFound = {kind: 'reject', status: 404};
 	assert.deepEqual(route(get(`/other?t=${TOKEN}`), TOKEN), notFound);
-	assert.deepEqual(route({method: 'POST', url: `/?t=${TOKEN}`}, TOKEN), notFound);
+	assert.deepEqual(route(req('POST', `/?t=${TOKEN}`), TOKEN), notFound);
 	assert.deepEqual(route(get(`/media/abc?t=${TOKEN}`), TOKEN), notFound);
 });
 
@@ -94,14 +105,47 @@ test('route accepts POST /api/action only with a valid token', () => {
 	assert.deepEqual(route(post('/api/action?t=nope'), TOKEN), {kind: 'reject', status: 403});
 });
 
+test('route accepts only the gallery host: 127.0.0.1 or localhost on this port', () => {
+	const url = `/api/jobs?t=${TOKEN}`;
+	const forbidden = {kind: 'reject', status: 403};
+	assert.deepEqual(route(req('GET', url, {host: `localhost:${PORT}`}), TOKEN), {kind: 'jobs'});
+	assert.deepEqual(route(req('GET', url, {host: `LOCALHOST:${PORT}`}), TOKEN), {kind: 'jobs'});
+	assert.deepEqual(route(req('GET', url, {host: 'evil.example'}), TOKEN), forbidden);
+	assert.deepEqual(route(req('GET', url, {host: `evil.example:${PORT}`}), TOKEN), forbidden);
+	assert.deepEqual(route(req('GET', url, {host: '127.0.0.1:9999'}), TOKEN), forbidden);
+	assert.deepEqual(route(req('GET', url, {host: '127.0.0.1'}), TOKEN), forbidden);
+	assert.deepEqual(route(req('GET', url, {host: undefined}), TOKEN), forbidden);
+});
+
+test('route refuses a request URL that is not one path starting with a single slash', () => {
+	const notFound = {kind: 'reject', status: 404};
+	assert.deepEqual(route(get(`//evil.example/api/jobs?t=${TOKEN}`), TOKEN), notFound);
+	assert.deepEqual(route(get(`//media/abc/x.png?t=${TOKEN}`), TOKEN), notFound);
+	assert.deepEqual(route(get(`http://127.0.0.1/api/jobs?t=${TOKEN}`), TOKEN), notFound);
+	assert.deepEqual(route(get(`*`), TOKEN), notFound);
+});
+
+test('route takes an action only as JSON, from the gallery origin or with no Origin', () => {
+	const url = `/api/action?t=${TOKEN}`;
+	const action = {kind: 'action'};
+	assert.deepEqual(route(req('POST', url, {contentType: 'application/json; charset=utf-8'}), TOKEN), action);
+	assert.deepEqual(route(req('POST', url, {contentType: 'application/json', origin: `http://127.0.0.1:${PORT}`}), TOKEN), action);
+	assert.deepEqual(route(req('POST', url, {contentType: 'application/json', origin: `http://localhost:${PORT}`}), TOKEN), action);
+	assert.deepEqual(route(req('POST', url, {contentType: 'text/plain'}), TOKEN), {kind: 'reject', status: 415});
+	assert.deepEqual(route(req('POST', url, {contentType: undefined}), TOKEN), {kind: 'reject', status: 415});
+	assert.deepEqual(route(req('POST', url, {contentType: 'application/json', origin: 'http://evil.example'}), TOKEN), {kind: 'reject', status: 403});
+	assert.deepEqual(route(req('POST', url, {contentType: 'application/json', origin: 'null'}), TOKEN), {kind: 'reject', status: 403});
+	assert.deepEqual(route(req('POST', url, {contentType: 'application/json', origin: `http://127.0.0.1:${PORT + 1}`}), TOKEN), {kind: 'reject', status: 403});
+});
+
 test('route rejects every other POST, and a GET of the action path, with 404', () => {
 	const notFound = {kind: 'reject', status: 404};
 	assert.deepEqual(route(post(`/api/jobs?t=${TOKEN}`), TOKEN), notFound);
 	assert.deepEqual(route(post(`/media/abc/x.png?t=${TOKEN}`), TOKEN), notFound);
 	assert.deepEqual(route(post(`/api/action/extra?t=${TOKEN}`), TOKEN), notFound);
 	assert.deepEqual(route(get(`/api/action?t=${TOKEN}`), TOKEN), notFound);
-	assert.deepEqual(route({method: 'PUT', url: `/api/action?t=${TOKEN}`}, TOKEN), notFound);
-	assert.deepEqual(route({method: 'DELETE', url: `/api/action?t=${TOKEN}`}, TOKEN), notFound);
+	assert.deepEqual(route(req('PUT', `/api/action?t=${TOKEN}`), TOKEN), notFound);
+	assert.deepEqual(route(req('DELETE', `/api/action?t=${TOKEN}`), TOKEN), notFound);
 });
 
 test('parseRange handles open, closed, suffix and impossible ranges', () => {
@@ -426,6 +470,7 @@ test('a throwing action handler answers with a failed result, not a crash', asyn
 	try {
 		const res = await fetch(`http://127.0.0.1:${gallery.port}/api/action?t=${TOKEN}`, {
 			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
 			body: JSON.stringify({action: 'present', jobId: 'job-1'}),
 		});
 		assert.equal(res.status, 200);
@@ -443,9 +488,54 @@ test('without an action handler the action path is not found', async () => {
 	try {
 		const res = await fetch(`http://127.0.0.1:${gallery.port}/api/action?t=${TOKEN}`, {
 			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
 			body: JSON.stringify({action: 'present', jobId: 'job-1'}),
 		});
 		assert.equal(res.status, 404);
+	} finally {
+		await gallery.close();
+		rmSync(cwd, {recursive: true, force: true});
+	}
+});
+
+test('over a real socket a foreign Host, a text/plain post and a foreign Origin never reach the mod', async () => {
+	const cwd = mkdtempSync(join(tmpdir(), 'atelier-hardening-'));
+	seedJob(cwd, 'job-1');
+	const calls: string[] = [];
+	const gallery = await startGallery({
+		cwd,
+		token: TOKEN,
+		onAction: async ({action}) => {
+			calls.push(action);
+			return {ok: true, message: 'done'};
+		},
+	});
+	const send = (options: {method?: string; path: string; headers: Record<string, string>; body?: string}): Promise<number> =>
+		new Promise((resolve, reject) => {
+			const request = httpRequest(
+				{host: '127.0.0.1', port: gallery.port, method: options.method ?? 'GET', path: options.path, headers: options.headers},
+				response => {
+					response.resume();
+					response.on('end', () => resolve(response.statusCode ?? 0));
+				},
+			);
+			request.on('error', reject);
+			request.end(options.body);
+		});
+	const own = `127.0.0.1:${gallery.port}`;
+	const body = JSON.stringify({action: 'present', jobId: 'job-1'});
+	try {
+		assert.equal(await send({path: `/api/jobs?t=${TOKEN}`, headers: {Host: own}}), 200);
+		assert.equal(await send({path: `/api/jobs?t=${TOKEN}`, headers: {Host: 'rebind.example'}}), 403);
+		assert.equal(await send({path: `/api/jobs?t=${TOKEN}`, headers: {Host: `rebind.example:${gallery.port}`}}), 403);
+		assert.equal(await send({path: `//rebind.example/api/jobs?t=${TOKEN}`, headers: {Host: own}}), 404);
+		const post = (headers: Record<string, string>): Promise<number> =>
+			send({method: 'POST', path: `/api/action?t=${TOKEN}`, headers: {Host: own, ...headers}, body});
+		assert.equal(await post({'Content-Type': 'text/plain'}), 415);
+		assert.equal(await post({'Content-Type': 'application/json', Origin: 'http://evil.example'}), 403);
+		assert.deepEqual(calls, []);
+		assert.equal(await post({'Content-Type': 'application/json', Origin: `http://127.0.0.1:${gallery.port}`}), 200);
+		assert.deepEqual(calls, ['present']);
 	} finally {
 		await gallery.close();
 		rmSync(cwd, {recursive: true, force: true});

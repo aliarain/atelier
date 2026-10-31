@@ -39,11 +39,17 @@ export type RouteDecision =
 			readonly jobId: string;
 			readonly file: string;
 	  }
-	| {readonly kind: 'reject'; readonly status: 403 | 404};
+	| {readonly kind: 'reject'; readonly status: 403 | 404 | 415};
 
+// The headers are part of the request on purpose: a page on another origin can make the
+// browser send a request here, and these are what tell it apart from the gallery's own page.
 export interface RouteRequest {
 	readonly method: string;
 	readonly url: string;
+	readonly port: number;
+	readonly host: string | undefined;
+	readonly origin: string | undefined;
+	readonly contentType: string | undefined;
 }
 
 interface Route {
@@ -58,6 +64,27 @@ const BASE = 'http://127.0.0.1';
 
 const FORBIDDEN: RouteDecision = {kind: 'reject', status: 403};
 const NOT_FOUND: RouteDecision = {kind: 'reject', status: 404};
+const UNSUPPORTED: RouteDecision = {kind: 'reject', status: 415};
+
+const LOCAL_NAMES = ['127.0.0.1', 'localhost'] as const;
+
+// A DNS-rebinding page reaches this server under its own name, so the Host header must be ours.
+function hostAllowed(req: RouteRequest): boolean {
+	const host = req.host?.toLowerCase();
+	return LOCAL_NAMES.some(name => host === `${name}:${req.port}`);
+}
+
+function originAllowed(req: RouteRequest): boolean {
+	if (req.origin === undefined) return true;
+	const origin = req.origin.toLowerCase();
+	return LOCAL_NAMES.some(name => origin === `http://${name}:${req.port}`);
+}
+
+// A cross-site form can post text/plain without a preflight; only a script on our own page
+// sends JSON.
+function isJson(contentType: string | undefined): boolean {
+	return (contentType ?? '').split(';')[0]?.trim().toLowerCase() === 'application/json';
+}
 
 function mediaDecision(jobId: string, file: string): RouteDecision {
 	if (!JOB_ID.test(jobId)) return NOT_FOUND;
@@ -86,13 +113,20 @@ function tokenMatches(given: string | null, expected: string): boolean {
 
 // Pure on purpose: every security decision is a function of (method, url, token).
 export function route(req: RouteRequest, token: string): RouteDecision {
+	// "//host/path" is a network-path reference, not a path on this server.
+	if (!req.url.startsWith('/') || req.url.startsWith('//')) return NOT_FOUND;
 	if (!URL.canParse(req.url, BASE)) return NOT_FOUND;
+	if (!hostAllowed(req)) return FORBIDDEN;
 	const url = new URL(req.url, BASE);
 	if (!tokenMatches(url.searchParams.get('t'), token)) return FORBIDDEN;
 	for (const candidate of ROUTES) {
 		if (candidate.method !== req.method) continue;
 		const match = candidate.pattern.exec(url.pathname);
-		if (match !== null) return candidate.decide(match.groups ?? {});
+		if (match === null) continue;
+		const decision = candidate.decide(match.groups ?? {});
+		if (decision.kind !== 'action') return decision;
+		if (!isJson(req.contentType)) return UNSUPPORTED;
+		return originAllowed(req) ? decision : FORBIDDEN;
 	}
 	return NOT_FOUND;
 }
@@ -394,12 +428,23 @@ function stream(
 async function handle(params: {
 	readonly cwd: string;
 	readonly token: string;
+	readonly port: number;
 	readonly onAction: GalleryActionHandler | undefined;
 	readonly req: IncomingMessage;
 	readonly res: ServerResponse;
 }): Promise<void> {
-	const {cwd, token, onAction, req, res} = params;
-	const decision = route({method: req.method ?? '', url: req.url ?? ''}, token);
+	const {cwd, token, port, onAction, req, res} = params;
+	const decision = route(
+		{
+			method: req.method ?? '',
+			url: req.url ?? '',
+			port,
+			host: req.headers.host,
+			origin: req.headers.origin,
+			contentType: req.headers['content-type'],
+		},
+		token,
+	);
 	if (decision.kind === 'reject') return sendStatus(res, decision.status);
 	if (decision.kind === 'index') return sendIndex(res, token);
 	if (decision.kind === 'jobs') return sendJobs(res, cwd, token);
@@ -420,8 +465,10 @@ export async function startGallery(params: {
 }): Promise<GalleryHandle> {
 	const {cwd, token, port = 0, onAction} = params;
 	if (token === '') throw new Error('the gallery needs a non-empty token');
+	// The port is known only once listening; requests cannot arrive before that.
+	const bound: {port: number} = {port};
 	const server = createServer((req, res) => {
-		handle({cwd, token, onAction, req, res}).catch(() => failRequest(res));
+		handle({cwd, token, port: bound.port, onAction, req, res}).catch(() => failRequest(res));
 	});
 	await new Promise<void>((resolve, reject) => {
 		server.once('error', reject);
@@ -431,6 +478,7 @@ export async function startGallery(params: {
 	if (address === null || typeof address === 'string') {
 		throw new Error('the gallery server has no TCP address');
 	}
+	bound.port = address.port;
 	return {
 		port: address.port,
 		url: `http://127.0.0.1:${address.port}/?t=${encodeURIComponent(token)}`,
