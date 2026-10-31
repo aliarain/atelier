@@ -177,7 +177,7 @@ describe('findVoice', () => {
 
 describe('voiceEngine', () => {
 	test('rejects an unknown voice and lists English voices, without speaking', async () => {
-		const outDir = await mkdtemp(join(tmpdir(), 'studio-voice-unknown-'));
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-voice-unknown-'));
 		const calls: string[] = [];
 		const listingOnly: Exec = async ({command, args}) => {
 			calls.push(`${command} ${args.join(' ')}`);
@@ -200,7 +200,7 @@ describe('voiceEngine', () => {
 	});
 
 	test('passes the script through a file and the resolved voice name to say', async () => {
-		const outDir = await mkdtemp(join(tmpdir(), 'studio-voice-args-'));
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-voice-args-'));
 		const calls: string[][] = [];
 		const recording: Exec = async ({command, args}) => {
 			calls.push([command, ...args]);
@@ -236,12 +236,12 @@ describe('voiceEngine', () => {
 	});
 
 	test(
-		'speaks "Studio test" into an m4a',
+		'speaks "Atelier test" into an m4a',
 		{skip: !availability.ok},
 		async () => {
-			const outDir = await mkdtemp(join(tmpdir(), 'studio-voice-'));
+			const outDir = await mkdtemp(join(tmpdir(), 'atelier-voice-'));
 			const outputs = await voiceEngine.run({
-				input: {text: 'Studio test'},
+				input: {text: 'Atelier test'},
 				ctx: contextFor(outDir),
 			});
 

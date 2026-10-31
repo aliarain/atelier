@@ -60,7 +60,7 @@ test('an orphaned paid job becomes uncertain, a free one fails and can be retrie
 });
 
 test('jobs persist atomically and load newest first', async () => {
-	const cwd = await mkdtemp(join(tmpdir(), 'studio-jobs-'));
+	const cwd = await mkdtemp(join(tmpdir(), 'atelier-jobs-'));
 	try {
 		await saveJob(cwd, base({id: 'old', updatedAt: 1}));
 		await saveJob(cwd, base({id: 'new', updatedAt: 2}));
@@ -98,7 +98,7 @@ const runParams = (cwd: string, engine: Engine, signal = new AbortController().s
 });
 
 test('runJob walks queued, running, completed and saves each step', async () => {
-	const cwd = await mkdtemp(join(tmpdir(), 'studio-run-'));
+	const cwd = await mkdtemp(join(tmpdir(), 'atelier-run-'));
 	try {
 		const states: string[] = [];
 		const engine = fakeEngine(async ({ctx}) => [{path: join(ctx.outDir, 'a.png'), kind: 'image', bytes: 3}]);
@@ -112,7 +112,7 @@ test('runJob walks queued, running, completed and saves each step', async () => 
 });
 
 test('runJob records an engine failure with its code', async () => {
-	const cwd = await mkdtemp(join(tmpdir(), 'studio-run-'));
+	const cwd = await mkdtemp(join(tmpdir(), 'atelier-run-'));
 	try {
 		const engine = fakeEngine(async () => {
 			throw engineFailure({code: 'render_failed', message: 'Chrome exited 1', retryable: true});
@@ -126,7 +126,7 @@ test('runJob records an engine failure with its code', async () => {
 });
 
 test('runJob marks an aborted run cancelled', async () => {
-	const cwd = await mkdtemp(join(tmpdir(), 'studio-run-'));
+	const cwd = await mkdtemp(join(tmpdir(), 'atelier-run-'));
 	try {
 		const controller = new AbortController();
 		const engine = fakeEngine(async () => {

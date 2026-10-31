@@ -172,7 +172,7 @@ describe('falImageEngine.available', () => {
 
 describe('falImageEngine.run', () => {
 	test('generates, downloads and saves the first image', async () => {
-		const outDir = await mkdtemp(join(tmpdir(), 'studio-fal-'));
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-fal-'));
 		const seen: {url: string; method: string; auth: string | null; signal: boolean}[] = [];
 		const fakeFetch: typeof fetch = async (input, init) => {
 			const url = String(input);
@@ -207,7 +207,7 @@ describe('falImageEngine.run', () => {
 	});
 
 	test('uses the downloaded content type for the extension', async () => {
-		const outDir = await mkdtemp(join(tmpdir(), 'studio-fal-jpg-'));
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-fal-jpg-'));
 		const fakeFetch: typeof fetch = async input =>
 			String(input).startsWith('https://fal.run/')
 				? jsonResponse({images: [{url: 'https://cdn.example/fox'}]})
@@ -237,7 +237,7 @@ describe('falImageEngine.run', () => {
 
 	for (const failure of failureCases) {
 		test(`maps ${failure.name} to ${failure.code}`, async () => {
-			const outDir = await mkdtemp(join(tmpdir(), 'studio-fal-fail-'));
+			const outDir = await mkdtemp(join(tmpdir(), 'atelier-fal-fail-'));
 			await assert.rejects(
 				falImageEngine.run({
 					input: INPUT,
@@ -253,7 +253,7 @@ describe('falImageEngine.run', () => {
 	}
 
 	test('includes the provider detail for a rejected request', async () => {
-		const outDir = await mkdtemp(join(tmpdir(), 'studio-fal-422-'));
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-fal-422-'));
 		await assert.rejects(
 			falImageEngine.run({
 				input: INPUT,
@@ -267,7 +267,7 @@ describe('falImageEngine.run', () => {
 	});
 
 	test('maps a download failure the same way', async () => {
-		const outDir = await mkdtemp(join(tmpdir(), 'studio-fal-dl-'));
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-fal-dl-'));
 		const fakeFetch: typeof fetch = async input =>
 			String(input).startsWith('https://fal.run/')
 				? jsonResponse({images: [{url: 'https://cdn.example/fox.png'}]})
@@ -280,7 +280,7 @@ describe('falImageEngine.run', () => {
 	});
 
 	test('fails with auth and never calls fetch when FAL_KEY is missing', async () => {
-		const outDir = await mkdtemp(join(tmpdir(), 'studio-fal-nokey-'));
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-fal-nokey-'));
 		let calls = 0;
 		const fakeFetch: typeof fetch = async () => {
 			calls += 1;
@@ -295,7 +295,7 @@ describe('falImageEngine.run', () => {
 	});
 
 	test('lets a cancellation through instead of reporting a network fault', async () => {
-		const outDir = await mkdtemp(join(tmpdir(), 'studio-fal-abort-'));
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-fal-abort-'));
 		const aborted = AbortSignal.abort();
 		const fakeFetch: typeof fetch = () => Promise.reject(aborted.reason);
 		await assert.rejects(

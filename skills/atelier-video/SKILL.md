@@ -1,9 +1,9 @@
 ---
-name: studio-video
+name: atelier-video
 description: Use when the person wants a short video, reel, promo, explainer, slideshow or animated announcement. Plans a storyboard, then builds it from designed stills, voiceover and the video engine.
 ---
 
-# Studio video
+# Atelier video
 
 The `video` engine composes an MP4 from still images with motion (`still`, `zoom_in`, `zoom_out`, `pan_left`, `pan_right`), crossfades, a voiceover and music. It cannot draw text. Every word on screen comes from a still you render with the `design` engine.
 
@@ -24,11 +24,11 @@ Rules of thumb:
 
 ## 2. Voice before picture
 
-When there is narration, make it first with the `voice` engine, one take for the whole script. Read its duration from the review, then fit scene durations so their sum minus transitions matches it within half a second. Load the studio-voice skill for script rules.
+When there is narration, make it first with the `voice` engine, one take for the whole script. Read its duration from the review, then fit scene durations so their sum minus transitions matches it within half a second. Load the atelier-voice skill for script rules.
 
 ## 3. Stills
 
-Render every scene with the `design` engine at the video's exact size. Use one shared style block so the scenes look like one piece. Load the studio-design skill. Keep text inside the safe area: away from the top 12% and bottom 18% on 9:16.
+Render every scene with the `design` engine at the video's exact size. Use one shared style block so the scenes look like one piece. Load the atelier-design skill. Keep text inside the safe area: away from the top 12% and bottom 18% on 9:16.
 
 ## 4. Compose
 
@@ -38,7 +38,7 @@ Render every scene with the `design` engine at the video's exact size. Use one s
 
 ## 5. Review, fix, present
 
-The review measures black or frozen frames, silence, loudness and peaks. Fix every `fail`. A `warn` about loudness or silence usually means the voiceover and scene timing drifted. Look at the middle-frame preview. Present the final video with `studio_present`, and include the storyboard as a short note in your reply.
+The review measures black or frozen frames, silence, loudness and peaks. Fix every `fail`. A `warn` about loudness or silence usually means the voiceover and scene timing drifted. Look at the middle-frame preview. Present the final video with `atelier_present`, and include the storyboard as a short note in your reply.
 
 ## Motion
 

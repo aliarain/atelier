@@ -16,7 +16,7 @@ import {
 import type {Measurements} from '../src/review.ts';
 import type {CheckStatus, ReviewCheck} from '../src/types.ts';
 
-const dir = await mkdtemp(join(tmpdir(), 'studio-review-'));
+const dir = await mkdtemp(join(tmpdir(), 'atelier-review-'));
 after(() => rm(dir, {recursive: true, force: true}));
 
 async function ffmpeg(args: readonly string[]): Promise<string> {

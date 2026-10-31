@@ -163,7 +163,7 @@ const none = document.getElementById('none');
 const count = document.getElementById('count');
 const filterBar = document.getElementById('filters');
 const toast = document.getElementById('toast');
-const FILTER_KEY = 'studio.gallery.filter';
+const FILTER_KEY = 'atelier.gallery.filter';
 const ACTIONS = [
 	{id: 'variant', label: 'Variant'},
 	{id: 'reveal', label: 'Show in Finder'},
@@ -218,7 +218,7 @@ const runAction = async (action, job, button) => {
 		const body = await response.json().catch(() => ({}));
 		showToast(body.message || 'That did not work. Try again.');
 	} catch (error) {
-		showToast('Could not reach Studio. Try again.');
+		showToast('Could not reach Atelier. Try again.');
 	}
 	button.disabled = false;
 };
@@ -456,11 +456,11 @@ export function renderIndexHtml(token: string): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Studio</title>
+<title>Atelier</title>
 <style>${PAGE_STYLE}</style>
 </head>
 <body>
-<header><svg class="mark" viewBox="0 0 16 16" aria-hidden="true"><path d="${MARK_PATH}"/></svg><h1>Studio</h1><span id="count"></span><div id="filters" role="group" aria-label="Filter by type" hidden></div></header>
+<header><svg class="mark" viewBox="0 0 16 16" aria-hidden="true"><path d="${MARK_PATH}"/></svg><h1>Atelier</h1><span id="count"></span><div id="filters" role="group" aria-label="Filter by type" hidden></div></header>
 <main>
 <div id="empty" hidden>Nothing made yet. Ask for a poster, a voiceover or a short video.</div>
 <div id="none" hidden></div>

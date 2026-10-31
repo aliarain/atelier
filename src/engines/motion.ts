@@ -538,7 +538,7 @@ async function checkAvailable(params: {
 		return {
 			ok: false,
 			reason:
-				'Chrome, Edge or Chromium was not found. Install Chrome or set STUDIO_CHROME to a browser binary.',
+				'Chrome, Edge or Chromium was not found. Install Chrome or set ATELIER_CHROME to a browser binary.',
 		};
 	}
 	const ffmpeg = await params.exec({command: 'ffmpeg', args: ['-version']});
@@ -560,7 +560,7 @@ export const motionEngine: Engine<MotionInput> = {
 		if (chrome === undefined) {
 			throw engineFailure({
 				code: 'chrome_missing',
-				message: 'No Chrome, Edge or Chromium found. Set STUDIO_CHROME.',
+				message: 'No Chrome, Edge or Chromium found. Set ATELIER_CHROME.',
 				retryable: false,
 			});
 		}

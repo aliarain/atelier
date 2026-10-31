@@ -403,7 +403,7 @@ describe('video engine real ffmpeg', () => {
 	const probeTarget: {dir: string} = {dir: ''};
 
 	before(async () => {
-		probeTarget.dir = await mkdtemp(join(tmpdir(), 'studio-video-'));
+		probeTarget.dir = await mkdtemp(join(tmpdir(), 'atelier-video-'));
 		const colors = ['red', 'blue', 'green'];
 		const images = colors.map(color =>
 			execFileExec({

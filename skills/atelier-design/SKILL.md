@@ -1,9 +1,9 @@
 ---
-name: studio-design
-description: Use before making any poster, social post, thumbnail, slide, ad, cover or video still with the studio design engine. Craft rules for HTML/CSS layouts that look professionally designed.
+name: atelier-design
+description: Use before making any poster, social post, thumbnail, slide, ad, cover or video still with the atelier design engine. Craft rules for HTML/CSS layouts that look professionally designed.
 ---
 
-# Studio design
+# Atelier design
 
 The `design` engine renders your HTML in Chrome at an exact pixel size and returns a PNG plus a preview you can see. You are the designer. Treat every render as a real deliverable.
 
@@ -48,10 +48,10 @@ Look at the preview before you say anything. Then check:
 - Is the message readable at thumbnail size?
 - Is anything clipped, overlapping, or touching an edge?
 - Does the review return a `blank` or `dimensions` problem?
-- `studio_create` also reports layout issues (clipped text, off canvas, overlap, safe area, tight edges). Fix every one before presenting.
+- `atelier_create` also reports layout issues (clipped text, off canvas, overlap, safe area, tight edges). Fix every one before presenting.
 
 Fix and render again. Two or three iterations is normal. Name versions in the title ("Launch poster v2") so the gallery tells them apart.
 
 When a set is needed (carousel, story sequence, video stills), keep one CSS block of shared tokens (colors, type scale, margins) and vary only the content, so the set looks like one system.
 
-Present the final with `studio_present` and a one-line note.
+Present the final with `atelier_present` and a one-line note.

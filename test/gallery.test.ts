@@ -116,7 +116,7 @@ test('parseRange handles open, closed, suffix and impossible ranges', () => {
 
 test('the index page carries the title, the empty state and no dashes in its text', () => {
 	const html = renderIndexHtml('a</script>b');
-	assert.match(html, /<title>Studio<\/title>/);
+	assert.match(html, /<title>Atelier<\/title>/);
 	assert.match(html, /Nothing made yet\. Ask for a poster, a voiceover or a short video\./);
 	assert.doesNotMatch(html, /[–—]/);
 	assert.ok(!html.includes('a</script>b'), 'token cannot close the script element');
@@ -263,16 +263,16 @@ test('the rendered page has no em or en dashes, no Live badge and no data innerH
 });
 
 test('the gallery lists jobs and serves media with ranges and a token gate', async () => {
-	const cwd = mkdtempSync(join(tmpdir(), 'studio-gallery-'));
+	const cwd = mkdtempSync(join(tmpdir(), 'atelier-gallery-'));
 	const jobId = 'abc123-def';
-	const outDir = join(cwd, '.studio', 'out', jobId);
+	const outDir = join(cwd, '.atelier', 'out', jobId);
 	mkdirSync(outDir, {recursive: true});
-	mkdirSync(join(cwd, '.studio', 'jobs'), {recursive: true});
+	mkdirSync(join(cwd, '.atelier', 'jobs'), {recursive: true});
 	const png = join(outDir, 'red.png');
 	execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'color=red:s=64x64', '-frames:v', '1', png]);
 	writeFileSync(join(outDir, 'source.html'), '<script>alert(1)</script>');
 	writeFileSync(
-		join(cwd, '.studio', 'jobs', `${jobId}.json`),
+		join(cwd, '.atelier', 'jobs', `${jobId}.json`),
 		JSON.stringify({
 			id: jobId,
 			sessionId: 's',
@@ -343,9 +343,9 @@ interface ActionCall {
 }
 
 function seedJob(cwd: string, id: string): void {
-	mkdirSync(join(cwd, '.studio', 'jobs'), {recursive: true});
+	mkdirSync(join(cwd, '.atelier', 'jobs'), {recursive: true});
 	writeFileSync(
-		join(cwd, '.studio', 'jobs', `${id}.json`),
+		join(cwd, '.atelier', 'jobs', `${id}.json`),
 		JSON.stringify({
 			id,
 			sessionId: 's',
@@ -364,7 +364,7 @@ function seedJob(cwd: string, id: string): void {
 }
 
 test('POST /api/action hands a validated action and its job to the mod and relays the answer', async () => {
-	const cwd = mkdtempSync(join(tmpdir(), 'studio-actions-'));
+	const cwd = mkdtempSync(join(tmpdir(), 'atelier-actions-'));
 	seedJob(cwd, 'job-1');
 	const calls: ActionCall[] = [];
 	const gallery = await startGallery({
@@ -416,7 +416,7 @@ test('POST /api/action hands a validated action and its job to the mod and relay
 });
 
 test('a throwing action handler answers with a failed result, not a crash', async () => {
-	const cwd = mkdtempSync(join(tmpdir(), 'studio-actions-'));
+	const cwd = mkdtempSync(join(tmpdir(), 'atelier-actions-'));
 	seedJob(cwd, 'job-1');
 	const gallery = await startGallery({
 		cwd,
@@ -437,7 +437,7 @@ test('a throwing action handler answers with a failed result, not a crash', asyn
 });
 
 test('without an action handler the action path is not found', async () => {
-	const cwd = mkdtempSync(join(tmpdir(), 'studio-actions-'));
+	const cwd = mkdtempSync(join(tmpdir(), 'atelier-actions-'));
 	seedJob(cwd, 'job-1');
 	const gallery = await startGallery({cwd, token: TOKEN});
 	try {

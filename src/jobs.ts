@@ -28,16 +28,16 @@ export function isFinished(state: JobState): boolean {
 	return FINISHED.has(state);
 }
 
-export function studioDir(cwd: string): string {
-	return join(cwd, '.studio');
+export function atelierDir(cwd: string): string {
+	return join(cwd, '.atelier');
 }
 
 export function jobsDir(cwd: string): string {
-	return join(studioDir(cwd), 'jobs');
+	return join(atelierDir(cwd), 'jobs');
 }
 
 export function outputDir(cwd: string, jobId: string): string {
-	return join(studioDir(cwd), 'out', jobId);
+	return join(atelierDir(cwd), 'out', jobId);
 }
 
 export function newJobId(now: number): string {

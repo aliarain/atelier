@@ -33,7 +33,7 @@ function jobLine(job: Job): string {
 // What the model should not lose track of: work still running, paid work that may have been
 // billed, and finished work the person has not been shown. Nothing to say means no reminder,
 // so a quiet session sends the same bytes every round.
-export function studioReminder(jobs: readonly Job[], sessionId: string): string | undefined {
+export function atelierReminder(jobs: readonly Job[], sessionId: string): string | undefined {
 	const mine = jobs.filter(job => job.sessionId === sessionId);
 	const open = mine.filter(
 		job =>
@@ -48,7 +48,7 @@ export function studioReminder(jobs: readonly Job[], sessionId: string): string 
 	const notes = uncertain
 		? ['An uncertain job may already be billed. Ask before making it again.']
 		: [];
-	return ['<studio_jobs>', ...lines, ...notes, '</studio_jobs>'].join('\n');
+	return ['<atelier_jobs>', ...lines, ...notes, '</atelier_jobs>'].join('\n');
 }
 
 export interface RunProgress {
@@ -65,11 +65,11 @@ export const FRESH_RUN: RunProgress = {
 	stopNudged: false,
 };
 
-export type StudioToolEvent =
+export type AtelierToolEvent =
 	| {readonly type: 'created'; readonly ok: boolean}
 	| {readonly type: 'presented'};
 
-export function trackTool(progress: RunProgress, event: StudioToolEvent): RunProgress {
+export function trackTool(progress: RunProgress, event: AtelierToolEvent): RunProgress {
 	if (event.type === 'presented') return {...progress, presented: true};
 	if (!event.ok) return progress;
 	return {...progress, created: progress.created + 1};
@@ -87,7 +87,7 @@ export function midRunNudge(
 	}
 	return {
 		progress: {...progress, nudged: true},
-		text: 'Several renders are done and none were shown yet. Present the best one now with studio_present (one line on what it is), then keep going.',
+		text: 'Several renders are done and none were shown yet. Present the best one now with atelier_present (one line on what it is), then keep going.',
 	};
 }
 
@@ -100,6 +100,6 @@ export function stopNudge(
 	}
 	return {
 		progress: {...progress, stopNudged: true},
-		reason: 'You made media this run but never presented it. Call studio_present with the final outputs and a one-line note, then stop.',
+		reason: 'You made media this run but never presented it. Call atelier_present with the final outputs and a one-line note, then stop.',
 	};
 }

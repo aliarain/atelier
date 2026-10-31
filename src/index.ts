@@ -11,21 +11,21 @@ import {
 	startGallery,
 } from './gallery.ts';
 import {
+	atelierDir,
 	isPidAlive,
 	loadJob,
 	loadJobs,
 	markPresented,
 	saveJob,
 	settleOrphan,
-	studioDir,
 } from './jobs.ts';
 import {
+	atelierReminder,
 	FRESH_RUN,
 	midRunNudge,
 	plainTitle,
 	type RunProgress,
 	stopNudge,
-	studioReminder,
 	trackTool,
 } from './policy.ts';
 import {type ElementCapabilities, paneNodes, supportsStatus} from './pane.ts';
@@ -49,14 +49,14 @@ type ToolOutcome =
 	| {readonly ok: false; readonly error: string};
 
 // Byte-stable on purpose: anything that changes per round goes through transformContext.
-const STUDIO_PROMPT = `<studio>
-You can make images, voiceovers and videos with the studio tools. Work like a designer:
+const ATELIER_PROMPT = `<atelier>
+You can make images, voiceovers and videos with the atelier tools. Work like a designer:
 1. Decide the format, size and story before making anything.
-2. Make with studio_create. Each call returns a measured review and, for images and video, a preview you can see. Fix any "fail" check before showing work.
-3. Show finished work with studio_present and a one-line note. The person watches a live gallery.
+2. Make with atelier_create. Each call returns a measured review and, for images and video, a preview you can see. Fix any "fail" check before showing work.
+3. Show finished work with atelier_present and a one-line note. The person watches a live gallery.
 The design engine renders your HTML and CSS in Chrome at the exact pixel size, so write real layouts with real copy. The video engine cannot draw text: put words in rendered stills. Never re-run an "uncertain" job without asking, it may already be paid for.
-Load the studio-* skills for craft rules before a first design or video.
-</studio>`;
+Load the atelier-* skills for craft rules before a first design or video.
+</atelier>`;
 
 const GALLERY_VIEW = 'gallery';
 
@@ -121,7 +121,7 @@ function stringArray(value: unknown): readonly string[] {
 	return value.filter((item): item is string => typeof item === 'string');
 }
 
-export default function studio(cmd: ModApi): void {
+export default function atelier(cmd: ModApi): void {
 	let sessionId = 'local';
 	let progress: RunProgress = FRESH_RUN;
 	let gallery: GalleryHandle | undefined;
@@ -146,11 +146,11 @@ export default function studio(cmd: ModApi): void {
 		}
 		if (action === 'present') {
 			await saveJob(cmd.cwd, markPresented(job, now()));
-			cmd.ui.toast(`Studio: ${job.title} marked as shown`, {level: 'success'});
+			cmd.ui.toast(`Atelier: ${job.title} marked as shown`, {level: 'success'});
 			return {ok: true, message: 'Marked as shown.'};
 		}
 		cmd.sendUserMessage(
-			`Make a variant of studio job ${job.id} ("${job.title}"): keep the format and message, try a different composition.`,
+			`Make a variant of atelier job ${job.id} ("${job.title}"): keep the format and message, try a different composition.`,
 		);
 		return {ok: true, message: 'Asked for a variant.'};
 	};
@@ -158,7 +158,7 @@ export default function studio(cmd: ModApi): void {
 	const ensureGallery = async (): Promise<GalleryHandle> => {
 		if (gallery) return gallery;
 		gallery = await startGallery({cwd: cmd.cwd, token, onAction: onGalleryAction});
-		viewUi.view?.({id: GALLERY_VIEW, title: 'Studio', url: gallery.url});
+		viewUi.view?.({id: GALLERY_VIEW, title: 'Atelier', url: gallery.url});
 		return gallery;
 	};
 
@@ -170,7 +170,7 @@ export default function studio(cmd: ModApi): void {
 
 	const refreshStatus = (): void => {
 		const titles = [...running.values()];
-		cmd.ui.setStatus(titles.length === 0 ? null : `studio: making ${titles.join(', ')}`);
+		cmd.ui.setStatus(titles.length === 0 ? null : `atelier: making${titles.join(', ')}`);
 		cmd.ui.refreshWidgets();
 	};
 
@@ -182,7 +182,7 @@ export default function studio(cmd: ModApi): void {
 		}
 	};
 
-	cmd.addFlag('studio-allow-paid', {
+	cmd.addFlag('atelier-allow-paid', {
 		type: 'boolean',
 		default: false,
 		description: 'Run paid engines without asking first (headless runs cannot ask).',
@@ -197,28 +197,28 @@ export default function studio(cmd: ModApi): void {
 			await gallery?.close();
 			gallery = undefined;
 		},
-		appendSystemPrompt: () => STUDIO_PROMPT,
+		appendSystemPrompt: () => ATELIER_PROMPT,
 		transformContext: async ({messages}) => {
-			const reminder = studioReminder(await loadJobs(cmd.cwd), sessionId);
+			const reminder = atelierReminder(await loadJobs(cmd.cwd), sessionId);
 			return reminder === undefined ? messages : withReminder(messages, reminder);
 		},
-		// Reading an image the studio is still writing returns half a file.
+		// Reading an image atelier is still writing returns half a file.
 		beforeToolCall: async ({toolName, input}) => {
 			if (toolName !== 'read_file' || running.size === 0) return undefined;
 			const path = typeof input.file_path === 'string' ? input.file_path : '';
-			if (!path.startsWith(studioDir(cmd.cwd))) return undefined;
+			if (!path.startsWith(atelierDir(cmd.cwd))) return undefined;
 			if (![...running.keys()].some(id => path.includes(id))) return undefined;
 			return {
 				block: true,
-				additionalContext: 'That studio job is still rendering. studio_create returns its outputs when it finishes.',
+				additionalContext: 'That atelier job is still rendering. atelier_create returns its outputs when it finishes.',
 			};
 		},
 		afterToolCall: async ({toolName, isError}) => {
-			if (toolName === 'studio_present' && !isError) {
+			if (toolName === 'atelier_present' && !isError) {
 				progress = trackTool(progress, {type: 'presented'});
 				return undefined;
 			}
-			if (toolName !== 'studio_create') return undefined;
+			if (toolName !== 'atelier_create') return undefined;
 			progress = trackTool(progress, {type: 'created', ok: !isError});
 			const nudge = midRunNudge(progress);
 			progress = nudge.progress;
@@ -239,9 +239,9 @@ export default function studio(cmd: ModApi): void {
 		alwaysLoad: true,
 		readOnly: true,
 		schema: {
-			name: 'studio_engines',
-			label: 'STUDIO',
-			description: 'List the studio engines (design images, voiceover, video, paid AI images), whether each works on this machine, and the exact input schema each takes. Call once before your first studio_create.',
+			name: 'atelier_engines',
+			label: 'ATELIER',
+			description: 'List the atelier engines (design images, voiceover, video, paid AI images), whether each works on this machine, and the exact input schema each takes. Call once before your first atelier_create.',
 			input_schema: {type: 'object', properties: {}, required: []},
 		},
 		run: async (): Promise<ToolOutcome> => {
@@ -255,9 +255,9 @@ export default function studio(cmd: ModApi): void {
 	cmd.addTool({
 		alwaysLoad: true,
 		schema: {
-			name: 'studio_create',
-			label: 'STUDIO',
-			description: 'Make one piece of media with a studio engine and wait for it. Returns the job, its output files, a measured review (fix "fail" checks before presenting) and a preview image you can see. Get each engine\'s input schema from studio_engines.',
+			name: 'atelier_create',
+			label: 'ATELIER',
+			description: 'Make one piece of media with an atelier engine and wait for it. Returns the job, its output files, a measured review (fix "fail" checks before presenting) and a preview image you can see. Get each engine\'s input schema from atelier_engines.',
 			input_schema: {
 				type: 'object',
 				properties: {
@@ -278,7 +278,7 @@ export default function studio(cmd: ModApi): void {
 			const available = await engine.available(deps);
 			if (!available.ok) return {ok: false, error: `${engine.id} is not available: ${available.reason}`};
 
-			if (engine.paid && cmd.getFlag('studio-allow-paid') !== true) {
+			if (engine.paid && cmd.getFlag('atelier-allow-paid') !== true) {
 				const approved = await cmd.ui.confirm({
 					title: `Run paid engine ${engine.id}?`,
 					message: `"${String(input.title)}" calls a paid provider and may cost money.`,
@@ -334,9 +334,9 @@ export default function studio(cmd: ModApi): void {
 		alwaysLoad: true,
 		readOnly: true,
 		schema: {
-			name: 'studio_review',
-			label: 'STUDIO',
-			description: 'Measure an image, video or audio file: size, duration, black or frozen frames, silence, loudness and peaks. Use it on files you did not make with studio_create.',
+			name: 'atelier_review',
+			label: 'ATELIER',
+			description: 'Measure an image, video or audio file: size, duration, black or frozen frames, silence, loudness and peaks. Use it on files you did not make with atelier_create.',
 			input_schema: {
 				type: 'object',
 				properties: {path: {type: 'string', description: 'Absolute path to the media file.'}},
@@ -345,7 +345,7 @@ export default function studio(cmd: ModApi): void {
 		},
 		run: async ({input, signal}): Promise<ToolOutcome> => {
 			const path = String(input.path ?? '');
-			if (!mediaKindOf(path)) return {ok: false, error: `Not a media file the studio can review: ${path}`};
+			if (!mediaKindOf(path)) return {ok: false, error: `Not a media file atelier can review: ${path}`};
 			const review = await reviewMedia({path, exec: execFileExec, signal}).catch((error: unknown) =>
 				error instanceof Error ? error : new Error(String(error)),
 			);
@@ -358,9 +358,9 @@ export default function studio(cmd: ModApi): void {
 		alwaysLoad: true,
 		readOnly: true,
 		schema: {
-			name: 'studio_jobs',
-			label: 'STUDIO',
-			description: 'List studio jobs with their state, outputs and errors. Defaults to this conversation; scope "project" lists every job in the project.',
+			name: 'atelier_jobs',
+			label: 'ATELIER',
+			description: 'List atelier jobs with their state, outputs and errors. Defaults to this conversation; scope "project" lists every job in the project.',
 			input_schema: {
 				type: 'object',
 				properties: {
@@ -381,8 +381,8 @@ export default function studio(cmd: ModApi): void {
 	cmd.addTool({
 		alwaysLoad: true,
 		schema: {
-			name: 'studio_present',
-			label: 'STUDIO',
+			name: 'atelier_present',
+			label: 'ATELIER',
 			description: 'Show finished work to the person: marks the jobs as delivered in the live gallery and returns the gallery URL. Use it for final or milestone outputs, with a one-line note.',
 			input_schema: {
 				type: 'object',
@@ -406,7 +406,7 @@ export default function studio(cmd: ModApi): void {
 			await Promise.all(done.map(job => saveJob(cmd.cwd, job)));
 			const handle = await revealGallery();
 			const note = String(input.note ?? '').slice(0, 300);
-			cmd.ui.toast(`Studio: ${note}`, {level: 'success'});
+			cmd.ui.toast(`Atelier: ${note}`, {level: 'success'});
 			return {
 				ok: true,
 				content: [
@@ -421,8 +421,8 @@ export default function studio(cmd: ModApi): void {
 	});
 
 	cmd.ui.pane({
-		id: 'studio',
-		title: 'Studio',
+		id: 'atelier',
+		title: 'Atelier',
 		render: () =>
 			paneNodes({
 				busy: [...running.values()],
@@ -436,12 +436,12 @@ export default function studio(cmd: ModApi): void {
 	});
 
 	cmd.addCommand({
-		name: 'studio',
-		description: 'Open the studio pane and its live gallery link',
+		name: 'atelier',
+		description: 'Open the Atelier pane and its live gallery',
 		handler: async () => {
 			await revealGallery();
-			cmd.ui.openPane('studio');
-			return {message: `Studio gallery: ${gallery?.url ?? 'starting'}`};
+			cmd.ui.openPane('atelier');
+			return {message: `Atelier gallery: ${gallery?.url ?? 'starting'}`};
 		},
 	});
 }

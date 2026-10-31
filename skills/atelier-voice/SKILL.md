@@ -1,11 +1,11 @@
 ---
-name: studio-voice
-description: Use when making a voiceover, narration, spoken intro or audio read with the studio voice engine. Script and voice rules for natural sounding text to speech.
+name: atelier-voice
+description: Use when making a voiceover, narration, spoken intro or audio read with the atelier voice engine. Script and voice rules for natural sounding text to speech.
 ---
 
-# Studio voice
+# Atelier voice
 
-The `voice` engine speaks text with the voices installed on this Mac and returns an M4A file. Call `studio_engines` once to confirm it is available.
+The `voice` engine speaks text with the voices installed on this Mac and returns an M4A file. Call `atelier_engines` once to confirm it is available.
 
 ## Script rules
 

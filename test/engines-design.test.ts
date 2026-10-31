@@ -126,8 +126,8 @@ describe('chromeCandidates', () => {
 		'/Applications/Chromium.app/Contents/MacOS/Chromium',
 	];
 
-	test('puts STUDIO_CHROME first when set', () => {
-		assert.deepEqual(chromeCandidates({STUDIO_CHROME: '/opt/chrome'}), [
+	test('puts ATELIER_CHROME first when set', () => {
+		assert.deepEqual(chromeCandidates({ATELIER_CHROME:'/opt/chrome'}), [
 			'/opt/chrome',
 			...installed,
 		]);
@@ -135,13 +135,13 @@ describe('chromeCandidates', () => {
 
 	test('lists only installed locations otherwise', () => {
 		assert.deepEqual(chromeCandidates({}), installed);
-		assert.deepEqual(chromeCandidates({STUDIO_CHROME: ''}), installed);
+		assert.deepEqual(chromeCandidates({ATELIER_CHROME:''}), installed);
 	});
 });
 
 describe('designEngine', () => {
 	test('reports render_failed with the stderr tail when Chrome exits non-zero', async () => {
-		const outDir = await mkdtemp(join(tmpdir(), 'studio-design-fail-'));
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-design-fail-'));
 		const failingExec: Exec = async () => ({
 			code: 1,
 			stdout: '',
@@ -152,7 +152,7 @@ describe('designEngine', () => {
 				input: {html: '<p>x</p>', width: 200, height: 120, scale: 1},
 				ctx: contextFor(outDir, {
 					exec: failingExec,
-					env: {STUDIO_CHROME: process.execPath},
+					env: {ATELIER_CHROME:process.execPath},
 				}),
 			}),
 			(error: unknown) =>
@@ -168,7 +168,7 @@ describe('designEngine', () => {
 		'renders a 200x120 red page to an exact-size PNG',
 		{skip: !availability.ok},
 		async () => {
-			const outDir = await mkdtemp(join(tmpdir(), 'studio-design-'));
+			const outDir = await mkdtemp(join(tmpdir(), 'atelier-design-'));
 			const outputs = await designEngine.run({
 				input: {
 					html: '<body style="margin:0;background:#f00"><h1>Red</h1></body>',
@@ -203,7 +203,7 @@ describe('designEngine', () => {
 		'doubles the pixel size at scale 2',
 		{skip: !availability.ok},
 		async () => {
-			const outDir = await mkdtemp(join(tmpdir(), 'studio-design-2x-'));
+			const outDir = await mkdtemp(join(tmpdir(), 'atelier-design-2x-'));
 			await designEngine.run({
 				input: {
 					html: '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120"><rect width="200" height="120" fill="#00f"/></svg>',
@@ -226,7 +226,7 @@ async function layoutOf(params: {
 	readonly width: number;
 	readonly height: number;
 }): Promise<LayoutReport> {
-	const outDir = await mkdtemp(join(tmpdir(), 'studio-layout-'));
+	const outDir = await mkdtemp(join(tmpdir(), 'atelier-layout-'));
 	await designEngine.run({
 		input: {...params, scale: 1},
 		ctx: contextFor(outDir),
@@ -323,7 +323,7 @@ describe('layout check in Chrome', {skip: !availability.ok}, () => {
 	});
 
 	test('does not fail the render when the QA pass fails', async () => {
-		const outDir = await mkdtemp(join(tmpdir(), 'studio-layout-qa-fail-'));
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-layout-qa-fail-'));
 		const realExec = execFileExec;
 		const qaFailsExec: Exec = params =>
 			params.args.includes('--dump-dom')
@@ -485,7 +485,7 @@ describe('classifyLayout', () => {
 describe('parseLayoutDom', () => {
 	test('reads the measurement out of a dumped DOM', () => {
 		const dom =
-			'<html><body><script type="application/json" id="studio-layout">{"width":10,"height":10,"boxes":[{"id":0,"ancestors":[],"text":"a \\u003c/script>","rect":{"x":1,"y":2,"w":3,"h":4},"clipped":false,"decoration":false}]}</script></body></html>';
+			'<html><body><script type="application/json" id="atelier-layout">{"width":10,"height":10,"boxes":[{"id":0,"ancestors":[],"text":"a \\u003c/script>","rect":{"x":1,"y":2,"w":3,"h":4},"clipped":false,"decoration":false}]}</script></body></html>';
 		assert.deepEqual(parseLayoutDom(dom), [
 			{
 				id: 0,
@@ -501,11 +501,11 @@ describe('parseLayoutDom', () => {
 	test('returns undefined for a missing or malformed element', () => {
 		assert.equal(parseLayoutDom('<html></html>'), undefined);
 		assert.equal(
-			parseLayoutDom('<script id="studio-layout">{nope</script>'),
+			parseLayoutDom('<script id="atelier-layout">{nope</script>'),
 			undefined,
 		);
 		assert.equal(
-			parseLayoutDom('<script id="studio-layout">{"boxes":[{"id":"x"}]}</script>'),
+			parseLayoutDom('<script id="atelier-layout">{"boxes":[{"id":"x"}]}</script>'),
 			undefined,
 		);
 	});
@@ -516,7 +516,7 @@ describe('qaDocument', () => {
 		const html = qaDocument({width: 1080, height: 1920});
 		assert.equal(
 			html.startsWith(
-				'<!doctype html><html><body style="margin:0"><iframe id="studio-frame" src="source.html" style="display:block;border:0;width:1080px;height:1920px"></iframe><script>',
+				'<!doctype html><html><body style="margin:0"><iframe id="atelier-frame" src="source.html" style="display:block;border:0;width:1080px;height:1920px"></iframe><script>',
 			),
 			true,
 		);

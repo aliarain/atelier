@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {createJob} from '../src/jobs.ts';
 import {
+	atelierReminder,
 	FRESH_RUN,
 	midRunNudge,
 	plainTitle,
 	stopNudge,
-	studioReminder,
 	trackTool,
 } from '../src/policy.ts';
 import type {Job} from '../src/types.ts';
@@ -28,7 +28,7 @@ const job = (overrides: Partial<Job>): Job => ({
 test('titles decode HTML entities, collapse whitespace and fall back when empty', () => {
 	assert.equal(plainTitle('Ember &amp; Oak  Fall\nMenu', 'design'), 'Ember & Oak Fall Menu');
 	assert.equal(plainTitle('&lt;b&gt; &quot;hi&quot; &#39;x&#39; &amp;amp;', 'design'), '<b> "hi" \'x\' &amp;');
-	assert.equal(plainTitle('Studio reel — v2', 'video'), 'Studio reel: v2');
+	assert.equal(plainTitle('Atelier reel — v2', 'video'), 'Atelier reel: v2');
 	assert.equal(plainTitle('Scene 1 – Reveal', 'design'), 'Scene 1: Reveal');
 	assert.equal(plainTitle('6–11 PM', 'design'), '6-11 PM');
 	assert.equal(plainTitle('   ', 'design'), 'design');
@@ -42,7 +42,7 @@ test('no reminder when every job in the session is presented or finished', () =>
 		job({id: 'j2', state: 'failed'}),
 		job({id: 'other', sessionId: 's2', state: 'running'}),
 	];
-	assert.equal(studioReminder(jobs, 's1'), undefined);
+	assert.equal(atelierReminder(jobs, 's1'), undefined);
 });
 
 test('the reminder lists unshown, running and uncertain work of this session only', () => {
@@ -52,13 +52,13 @@ test('the reminder lists unshown, running and uncertain work of this session onl
 		job({id: 'x', sessionId: 's2', state: 'running'}),
 	];
 	assert.equal(
-		studioReminder(jobs, 's1'),
+		atelierReminder(jobs, 's1'),
 		[
-			'<studio_jobs>',
+			'<atelier_jobs>',
 			'- j1 "Poster" (design) completed: /p/a.png',
 			'- j2 "Ad" (fal-image) uncertain: stopped',
 			'An uncertain job may already be billed. Ask before making it again.',
-			'</studio_jobs>',
+			'</atelier_jobs>',
 		].join('\n'),
 	);
 });
@@ -85,7 +85,7 @@ test('failed makes do not count and presenting silences the nudges', () => {
 test('the stop nudge asks once to present work made this run', () => {
 	const made = trackTool(FRESH_RUN, {type: 'created', ok: true});
 	const first = stopNudge(made);
-	assert.match(first.reason ?? '', /studio_present/);
+	assert.match(first.reason ?? '', /atelier_present/);
 	assert.equal(stopNudge(first.progress).reason, undefined);
 	assert.equal(stopNudge(FRESH_RUN).reason, undefined);
 });

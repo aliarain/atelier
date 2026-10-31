@@ -67,7 +67,7 @@ function run(file: string, args: readonly string[]): Promise<string> {
 }
 
 async function withTempDir<T>(body: (dir: string) => Promise<T>): Promise<T> {
-	const dir = await mkdtemp(join(tmpdir(), 'studio-motion-'));
+	const dir = await mkdtemp(join(tmpdir(), 'atelier-motion-'));
 	try {
 		return await body(dir);
 	} finally {

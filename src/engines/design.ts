@@ -86,7 +86,7 @@ export function wrapHtml(html: string): string {
 }
 
 export function chromeCandidates(env: Env): readonly string[] {
-	const fromEnv = env.STUDIO_CHROME;
+	const fromEnv = env.ATELIER_CHROME;
 	const installed = [
 		'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
 		'/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
@@ -313,7 +313,7 @@ function isLayoutBox(value: unknown): value is LayoutBox {
 }
 
 const LAYOUT_ELEMENT =
-	/<script[^>]*id="studio-layout"[^>]*>([\s\S]*?)<\/script>/;
+	/<script[^>]*id="atelier-layout"[^>]*>([\s\S]*?)<\/script>/;
 
 // Reads the measurement the injected script left in the dumped DOM.
 export function parseLayoutDom(dom: string): readonly LayoutBox[] | undefined {
@@ -331,7 +331,7 @@ export function parseLayoutDom(dom: string): readonly LayoutBox[] | undefined {
 // Measures text boxes only; every judgement lives in classifyLayout. `<` is escaped in the
 // JSON so page text containing a closing script tag cannot end the element early.
 const MEASURE_SCRIPT = String.raw`(function () {
-  var frame = document.getElementById("studio-frame");
+  var frame = document.getElementById("atelier-frame");
   var d, w;
   var SKIP = {SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TITLE: 1, TEMPLATE: 1};
   var CLIP = /^(hidden|clip)$/;
@@ -406,7 +406,7 @@ const MEASURE_SCRIPT = String.raw`(function () {
     });
     var out = document.createElement("script");
     out.type = "application/json";
-    out.id = "studio-layout";
+    out.id = "atelier-layout";
     out.textContent = JSON.stringify({boxes: boxes}).replace(/</g, "\\u003c");
     document.body.appendChild(out);
   }
@@ -426,7 +426,7 @@ export function qaDocument(params: {
 	readonly width: number;
 	readonly height: number;
 }): string {
-	const frame = `<iframe id="studio-frame" src="${QA_SOURCE_FILE}" style="display:block;border:0;width:${params.width}px;height:${params.height}px"></iframe>`;
+	const frame = `<iframe id="atelier-frame" src="${QA_SOURCE_FILE}" style="display:block;border:0;width:${params.width}px;height:${params.height}px"></iframe>`;
 	return `<!doctype html><html><body style="margin:0">${frame}<script>${MEASURE_SCRIPT}</script></body></html>`;
 }
 
@@ -532,7 +532,7 @@ export const designEngine: Engine<DesignInput> = {
 			? {
 					ok: false,
 					reason:
-						'Chrome, Edge or Chromium was not found. Install Chrome or set STUDIO_CHROME to a browser binary.',
+						'Chrome, Edge or Chromium was not found. Install Chrome or set ATELIER_CHROME to a browser binary.',
 				}
 			: {ok: true},
 	run: async ({input, ctx}): Promise<readonly MediaOutput[]> => {
@@ -540,7 +540,7 @@ export const designEngine: Engine<DesignInput> = {
 		if (chrome === undefined) {
 			throw engineFailure({
 				code: 'chrome_missing',
-				message: 'No Chrome, Edge or Chromium found. Set STUDIO_CHROME.',
+				message: 'No Chrome, Edge or Chromium found. Set ATELIER_CHROME.',
 				retryable: false,
 			});
 		}
