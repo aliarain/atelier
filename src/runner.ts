@@ -1,3 +1,4 @@
+import {readFileSync, statSync} from 'node:fs';
 import {mkdir, readFile, rm, stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {isEngineFailure, stderrTail} from './exec.ts';
@@ -82,9 +83,14 @@ export async function runJob(params: RunJobParams): Promise<Job> {
 }
 
 const PREVIEW_EDGE = 768;
+const PREVIEW_FILE = 'preview.jpg';
+// A chat card inlines the preview as a data URL, so a runaway file must not ride along.
+const PREVIEW_CARD_MAX_BYTES = 600 * 1024;
+const JOB_ID = /^[a-z0-9-]+$/;
 
 // A small JPEG the model can look at: the image itself, or the middle frame of a video.
-// Full-size renders would cost far more tokens than a review glance needs.
+// Full-size renders would cost far more tokens than a review glance needs. The file stays in
+// the job folder as preview.jpg so the chat card can show it later without another render.
 export async function previewOf(params: {
 	readonly output: MediaOutput;
 	readonly exec: Exec;
@@ -92,7 +98,7 @@ export async function previewOf(params: {
 }): Promise<string | undefined> {
 	const {output, exec} = params;
 	if (output.kind === 'audio') return undefined;
-	const target = join(output.path, '..', `.preview-${Date.now()}.jpg`);
+	const target = join(output.path, '..', PREVIEW_FILE);
 	const seek = output.kind === 'video' ? ['-ss', String((params.durationS ?? 0) / 2)] : [];
 	const result = await exec({
 		command: 'ffmpeg',
@@ -113,10 +119,24 @@ export async function previewOf(params: {
 		],
 		timeoutMs: 30_000,
 	});
-	if (result.code !== 0) return undefined;
+	if (result.code !== 0) {
+		await rm(target, {force: true});
+		return undefined;
+	}
 	const bytes = await readFile(target).catch(() => undefined);
-	await rm(target, {force: true});
 	return bytes?.toString('base64');
+}
+
+// Sync because a mod element override has to answer without awaiting.
+export function readPreviewDataUrl(cwd: string, jobId: string): string | undefined {
+	if (!JOB_ID.test(jobId)) return undefined;
+	const path = join(outputDir(cwd, jobId), PREVIEW_FILE);
+	try {
+		if (statSync(path).size > PREVIEW_CARD_MAX_BYTES) return undefined;
+		return `data:image/jpeg;base64,${readFileSync(path).toString('base64')}`;
+	} catch {
+		return undefined;
+	}
 }
 
 export async function fileBytes(path: string): Promise<number> {
