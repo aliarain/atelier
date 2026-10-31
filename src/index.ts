@@ -23,6 +23,7 @@ import {
 	studioReminder,
 	trackTool,
 } from './policy.ts';
+import {type ElementCapabilities, paneNodes, supportsStatus} from './pane.ts';
 import {reviewMedia} from './review.ts';
 import {previewOf, runJob} from './runner.ts';
 import type {Engine, Job, Review} from './types.ts';
@@ -125,7 +126,7 @@ export default function studio(cmd: ModApi): void {
 	const deps = {exec: execFileExec, env: process.env, fetch: globalThis.fetch};
 
 	// Command Code builds that predate mod views lack these; the gallery link still works there.
-	const viewUi = cmd.ui as ModApi['ui'] & ViewUi;
+	const viewUi = cmd.ui as ModApi['ui'] & ViewUi & ElementCapabilities;
 
 	const ensureGallery = async (): Promise<GalleryHandle> => {
 		if (gallery) return gallery;
@@ -395,29 +396,16 @@ export default function studio(cmd: ModApi): void {
 	cmd.ui.pane({
 		id: 'studio',
 		title: 'Studio',
-		render: () => {
-			const url = gallery?.url;
-			const busy = [...running.values()];
-			return [
-				{type: 'text', text: busy.length > 0 ? `Making: ${busy.join(', ')}` : 'Idle', bold: true},
-				{type: 'text', text: url ? `Gallery: ${url}` : 'Gallery starts when work is presented, or press g.', dim: true},
-				{
-					type: 'row',
-					children: [
-						{
-							type: 'button',
-							label: 'Open gallery',
-							hotkey: 'g',
-							onPress: async () => {
-								const handle = await revealGallery();
-								if (!viewUi.openView) await execFileExec({command: 'open', args: [handle.url]});
-								cmd.ui.refreshWidgets();
-							},
-						},
-					],
+		render: () =>
+			paneNodes({
+				busy: [...running.values()],
+				hasStatus: supportsStatus(viewUi),
+				onOpenGallery: async () => {
+					const handle = await revealGallery();
+					if (!viewUi.openView) await execFileExec({command: 'open', args: [handle.url]});
+					cmd.ui.refreshWidgets();
 				},
-			];
-		},
+			}),
 	});
 
 	cmd.addCommand({
