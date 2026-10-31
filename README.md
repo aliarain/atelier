@@ -18,21 +18,27 @@ Every output gets a measured review: black or frozen frames, silences, loudness,
 - macOS with Google Chrome (or Edge or Chromium, or set `STUDIO_CHROME`)
 - ffmpeg on `PATH`
 
-## Try it
+## Install
 
-Load it for one run:
+For every project, from the private repo:
 
 ```bash
-cmd --mod ~/Documents/Projects/voyager-rea/studio
+cmd mods add -g git@github.com:aliarain/cmd-studio.git
 ```
 
-Load it in one project: add it to that project's `.commandcode/settings.json` and approve "Run mods" when asked.
+From a local checkout:
 
-```json
-{"mods": {"paths": ["/Users/aliarain/Documents/Projects/voyager-rea/studio"]}}
+```bash
+cmd mods add -g ~/Documents/Projects/cmd-studio
 ```
 
-Then ask for something: "Make a square Instagram post for my bakery's spring menu", or "Make a 15 second vertical reel with a voiceover about our launch".
+For one run only:
+
+```bash
+cmd --mod ~/Documents/Projects/cmd-studio
+```
+
+Remove it with `cmd mods remove -g studio`. Then ask for something: "Make a square Instagram post for my bakery's spring menu", or "Make a 15 second vertical reel with a voiceover about our launch".
 
 ## Tools the agent gets
 
@@ -54,5 +60,5 @@ Jobs and outputs live in the project under `.studio/` (`jobs/<id>.json`, `out/<i
 
 ```bash
 pnpm test        # 130 tests, real Chrome, say and ffmpeg runs included
-pnpm typecheck
+pnpm typecheck   # needs a built Command Code checkout at ../commandcode
 ```

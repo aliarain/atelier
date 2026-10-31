@@ -12,10 +12,10 @@
 		"noEmit": true,
 		"skipLibCheck": true,
 		"types": ["node"],
-		"typeRoots": ["/Users/aliarain/Documents/Projects/commandcode/.claude/worktrees/voyager-rea-review-998e00/node_modules/@types"],
+		"typeRoots": ["../commandcode/node_modules/@types"],
 		"baseUrl": ".",
 		"paths": {
-			"@commandcode/harness": ["/Users/aliarain/Documents/Projects/commandcode/.claude/worktrees/voyager-rea-review-998e00/packages/harness/src/index.ts"]
+			"@commandcode/harness": ["../commandcode/packages/harness/src/index.ts"]
 		}
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts"]
