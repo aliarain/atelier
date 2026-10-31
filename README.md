@@ -39,7 +39,7 @@ For one run only:
 cmd --mod ~/Documents/Projects/atelier
 ```
 
-Remove it with `cmd mods remove -g atelier`. Then ask for something: "Make a square Instagram post for my bakery's spring menu", or "Make a 15 second vertical reel with a voiceover about our launch".
+Remove it with `cmd mods remove -g aliarain/atelier` (or the local path you installed from). Then ask for something: "Make a square Instagram post for my bakery's spring menu", or "Make a 15 second vertical reel with a voiceover about our launch".
 
 ## Tools the agent gets
 

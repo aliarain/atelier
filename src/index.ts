@@ -54,7 +54,7 @@ You can make images, voiceovers and videos with the atelier tools. Work like a d
 1. Decide the format, size and story before making anything.
 2. Make with atelier_create. Each call returns a measured review and, for images and video, a preview you can see. Fix any "fail" check before showing work.
 3. Show finished work with atelier_present and a one-line note. The person watches a live gallery.
-The design engine renders your HTML and CSS in Chrome at the exact pixel size, so write real layouts with real copy. The video engine cannot draw text: put words in rendered stills. Never re-run an "uncertain" job without asking, it may already be paid for.
+The design engine renders your HTML and CSS in Chrome at the exact pixel size, so write real layouts with real copy. The motion engine renders animated HTML and CSS (kinetic type, animated titles, logo reveals) frame by frame into a video. The video engine edits stills with camera moves, crossfades, voiceover and music, and cannot draw text: put words in rendered stills. Never re-run an "uncertain" job without asking, it may already be paid for.
 Load the atelier-* skills for craft rules before a first design or video.
 </atelier>`;
 
@@ -241,7 +241,7 @@ export default function atelier(cmd: ModApi): void {
 		schema: {
 			name: 'atelier_engines',
 			label: 'ATELIER',
-			description: 'List the atelier engines (design images, voiceover, video, paid AI images), whether each works on this machine, and the exact input schema each takes. Call once before your first atelier_create.',
+			description: 'List the atelier engines (design images, motion graphics, voiceover, video edits, paid AI images), whether each works on this machine, and the exact input schema each takes. Call once before your first atelier_create.',
 			input_schema: {type: 'object', properties: {}, required: []},
 		},
 		run: async (): Promise<ToolOutcome> => {
