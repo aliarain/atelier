@@ -50,6 +50,17 @@ The design engine renders your HTML and CSS in Chrome at the exact pixel size, s
 Load the studio-* skills for craft rules before a first design or video.
 </studio>`;
 
+const GALLERY_VIEW = 'gallery';
+
+interface ViewUi {
+	readonly view?: (params: {
+		readonly id: string;
+		readonly title: string;
+		readonly url: string;
+	}) => {dispose(): void};
+	readonly openView?: (id: string) => void;
+}
+
 const text = (value: string): ToolContent => ({type: 'text', text: value});
 const json = (value: unknown): ToolContent => text(JSON.stringify(value, null, 2));
 
@@ -100,9 +111,20 @@ export default function studio(cmd: ModApi): void {
 	const now = (): number => Date.now();
 	const deps = {exec: execFileExec, env: process.env, fetch: globalThis.fetch};
 
+	// Command Code builds that predate mod views lack these; the gallery link still works there.
+	const viewUi = cmd.ui as ModApi['ui'] & ViewUi;
+
 	const ensureGallery = async (): Promise<GalleryHandle> => {
-		gallery ??= await startGallery({cwd: cmd.cwd, token});
+		if (gallery) return gallery;
+		gallery = await startGallery({cwd: cmd.cwd, token});
+		viewUi.view?.({id: GALLERY_VIEW, title: 'Studio', url: gallery.url});
 		return gallery;
+	};
+
+	const revealGallery = async (): Promise<GalleryHandle> => {
+		const handle = await ensureGallery();
+		viewUi.openView?.(GALLERY_VIEW);
+		return handle;
 	};
 
 	const refreshStatus = (): void => {
@@ -339,7 +361,7 @@ export default function studio(cmd: ModApi): void {
 			}
 			const done = jobs.filter((job): job is Job => job !== undefined).map(job => markPresented(job, now()));
 			await Promise.all(done.map(job => saveJob(cmd.cwd, job)));
-			const handle = await ensureGallery();
+			const handle = await revealGallery();
 			const note = String(input.note ?? '').slice(0, 300);
 			cmd.ui.toast(`Studio: ${note}`, {level: 'success'});
 			return {
@@ -372,8 +394,8 @@ export default function studio(cmd: ModApi): void {
 							label: 'Open gallery',
 							hotkey: 'g',
 							onPress: async () => {
-								const handle = await ensureGallery();
-								await execFileExec({command: 'open', args: [handle.url]});
+								const handle = await revealGallery();
+								if (!viewUi.openView) await execFileExec({command: 'open', args: [handle.url]});
 								cmd.ui.refreshWidgets();
 							},
 						},
@@ -387,7 +409,7 @@ export default function studio(cmd: ModApi): void {
 		name: 'studio',
 		description: 'Open the studio pane and its live gallery link',
 		handler: async () => {
-			await ensureGallery();
+			await revealGallery();
 			cmd.ui.openPane('studio');
 			return {message: `Studio gallery: ${gallery?.url ?? 'starting'}`};
 		},
