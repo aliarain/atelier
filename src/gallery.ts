@@ -6,6 +6,7 @@ import type {IncomingMessage, ServerResponse} from 'node:http';
 import {basename, join, sep} from 'node:path';
 import {renderIndexHtml} from './gallery-page.ts';
 import {loadJobs, outputDir} from './jobs.ts';
+import {plainTitle} from './policy.ts';
 import type {Job, JobState, MediaKind} from './types.ts';
 
 export interface GalleryHandle {
@@ -171,7 +172,8 @@ export function toGalleryJobs(
 		.sort((a, b) => b.createdAt - a.createdAt)
 		.map(job => ({
 			id: job.id,
-			title: job.title,
+			// Jobs saved before titles were decoded at the tool boundary still hold "&amp;".
+			title: plainTitle(job.title, job.engine),
 			engine: job.engine,
 			state: job.state,
 			presented: job.presented === true,
