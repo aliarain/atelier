@@ -1,4 +1,6 @@
 import {randomBytes} from 'node:crypto';
+import {readFile} from 'node:fs/promises';
+import {dirname, join} from 'node:path';
 import type {AgentMessage, ModApi} from '@commandcode/harness';
 import {ENGINES, findEngine} from './engines/index.ts';
 import {execFileExec, mediaKindOf} from './exec.ts';
@@ -82,6 +84,17 @@ function engineCard(engine: Engine, available: {ok: boolean; reason?: string}): 
 		...(available.ok ? {} : {reason: available.reason}),
 		input_schema: engine.inputSchema,
 	};
+}
+
+// The design engine leaves a layout.json beside its PNG when Chrome could measure the page.
+async function layoutReport(outputPath: string): Promise<unknown> {
+	const raw = await readFile(join(dirname(outputPath), 'layout.json'), 'utf8').catch(() => undefined);
+	if (raw === undefined) return undefined;
+	try {
+		return JSON.parse(raw) as unknown;
+	} catch {
+		return undefined;
+	}
 }
 
 function withReminder(
@@ -270,6 +283,7 @@ export default function studio(cmd: ModApi): void {
 			const reviews = await Promise.all(
 				job.outputs.map(output => reviewMedia({path: output.path, exec: execFileExec}).catch(() => undefined)),
 			);
+			const layouts = await Promise.all(job.outputs.map(output => layoutReport(output.path)));
 			const first = job.outputs[0];
 			const preview = first
 				? await previewOf({output: first, exec: execFileExec, durationS: reviews[0]?.probe.durationS})
@@ -280,6 +294,7 @@ export default function studio(cmd: ModApi): void {
 					state: job.state,
 					outputs: job.outputs,
 					reviews: reviews.map(review => (review ? reviewSummary(review) : 'review unavailable')),
+					...(layouts.some(Boolean) ? {layout: layouts} : {}),
 				}),
 			];
 			if (preview) content.push({type: 'image', source: {type: 'base64', media_type: 'image/jpeg', data: preview}});
