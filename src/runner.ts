@@ -1,0 +1,124 @@
+import {mkdir, readFile, rm, stat} from 'node:fs/promises';
+import {join} from 'node:path';
+import {isEngineFailure, stderrTail} from './exec.ts';
+import {createJob, moveJob, newJobId, outputDir, saveJob} from './jobs.ts';
+import type {Engine, Env, Exec, Job, JobError, MediaOutput} from './types.ts';
+
+export interface RunJobParams {
+	readonly cwd: string;
+	readonly sessionId: string;
+	readonly engine: Engine;
+	readonly input: unknown;
+	readonly title: string;
+	readonly exec: Exec;
+	readonly env: Env;
+	readonly fetch: typeof fetch;
+	readonly signal: AbortSignal;
+	readonly now: () => number;
+	// Fires after every saved transition so a gallery or pane can repaint.
+	readonly onChange?: (job: Job) => void;
+}
+
+function errorOf(error: unknown, aborted: boolean): JobError {
+	if (aborted) {
+		return {code: 'cancelled', message: 'The run was stopped.', retryable: true};
+	}
+	if (isEngineFailure(error)) {
+		return {code: error.code, message: error.message, retryable: error.retryable};
+	}
+	const message = error instanceof Error ? error.message : String(error);
+	return {code: 'engine_error', message: stderrTail(message), retryable: true};
+}
+
+async function commit(params: RunJobParams, job: Job): Promise<Job> {
+	await saveJob(params.cwd, job);
+	params.onChange?.(job);
+	return job;
+}
+
+// Drive one job through its state machine. Every transition is saved before the next step,
+// so a crash leaves a record that settleOrphan can classify on the next start.
+export async function runJob(params: RunJobParams): Promise<Job> {
+	const {engine, now} = params;
+	const id = newJobId(now());
+	const queued = createJob({
+		id,
+		sessionId: params.sessionId,
+		engine: engine.id,
+		title: params.title,
+		input: params.input,
+		paid: engine.paid,
+		ownerPid: process.pid,
+		now: now(),
+	});
+	await commit(params, queued);
+
+	const outDir = outputDir(params.cwd, id);
+	await mkdir(outDir, {recursive: true});
+	const started = moveJob(queued, {state: 'running'}, now());
+	if (!started.ok) return queued;
+	const running = await commit(params, started.job);
+
+	try {
+		const outputs = await engine.run({
+			input: params.input,
+			ctx: {
+				outDir,
+				cwd: params.cwd,
+				signal: params.signal,
+				exec: params.exec,
+				env: params.env,
+				fetch: params.fetch,
+			},
+		});
+		const done = moveJob(running, {state: 'completed', outputs}, now());
+		return done.ok ? commit(params, done.job) : running;
+	} catch (error) {
+		const aborted = params.signal.aborted;
+		const state = aborted ? 'cancelled' : 'failed';
+		const failed = moveJob(running, {state, error: errorOf(error, aborted)}, now());
+		return failed.ok ? commit(params, failed.job) : running;
+	}
+}
+
+const PREVIEW_EDGE = 768;
+
+// A small JPEG the model can look at: the image itself, or the middle frame of a video.
+// Full-size renders would cost far more tokens than a review glance needs.
+export async function previewOf(params: {
+	readonly output: MediaOutput;
+	readonly exec: Exec;
+	readonly durationS?: number;
+}): Promise<string | undefined> {
+	const {output, exec} = params;
+	if (output.kind === 'audio') return undefined;
+	const target = join(output.path, '..', `.preview-${Date.now()}.jpg`);
+	const seek = output.kind === 'video' ? ['-ss', String((params.durationS ?? 0) / 2)] : [];
+	const result = await exec({
+		command: 'ffmpeg',
+		args: [
+			'-y',
+			'-v',
+			'error',
+			...seek,
+			'-i',
+			output.path,
+			'-vf',
+			`scale='min(${PREVIEW_EDGE},iw)':-2`,
+			'-frames:v',
+			'1',
+			'-q:v',
+			'4',
+			target,
+		],
+		timeoutMs: 30_000,
+	});
+	if (result.code !== 0) return undefined;
+	const bytes = await readFile(target).catch(() => undefined);
+	await rm(target, {force: true});
+	return bytes?.toString('base64');
+}
+
+export async function fileBytes(path: string): Promise<number> {
+	return (await stat(path).catch(() => undefined))?.size ?? 0;
+}

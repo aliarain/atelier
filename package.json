@@ -1,0 +1,16 @@
+{
+	"name": "studio",
+	"version": "0.0.1",
+	"private": true,
+	"description": "Creative studio for Command Code: design, voice and video jobs with measured review and a live gallery.",
+	"type": "module",
+	"keywords": ["cmd-mod", "cmd-mod-tool", "cmd-mod-hook", "cmd-mod-command"],
+	"commandcode": {
+		"mods": ["./src/index.ts"],
+		"skills": ["./skills"]
+	},
+	"scripts": {
+		"test": "node --experimental-strip-types --no-warnings --test 'test/**/*.test.ts'",
+		"typecheck": "tsc --noEmit -p ."
+	}
+}
