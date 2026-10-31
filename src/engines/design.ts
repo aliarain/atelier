@@ -158,6 +158,9 @@ export interface LayoutBox {
 	readonly ancestors: readonly number[];
 	readonly text: string;
 	readonly rect: LayoutRect;
+	// Each line trimmed to a one-em band around its middle. A font's content box (what `rect`
+	// holds) reaches well past the letters, so tight display leading would read as overlap.
+	readonly ink?: LayoutRect;
 	readonly clipped: boolean;
 	readonly decoration: boolean;
 }
@@ -219,9 +222,11 @@ function intersection(a: LayoutRect, b: LayoutRect): LayoutRect | undefined {
 function overlapIssue(a: LayoutBox, b: LayoutBox): LayoutIssue | undefined {
 	if (a.decoration || b.decoration) return undefined;
 	if (a.ancestors.includes(b.id) || b.ancestors.includes(a.id)) return undefined;
-	const shared = intersection(a.rect, b.rect);
+	const inkA = a.ink ?? a.rect;
+	const inkB = b.ink ?? b.rect;
+	const shared = intersection(inkA, inkB);
 	if (shared === undefined) return undefined;
-	const smaller = Math.min(a.rect.w * a.rect.h, b.rect.w * b.rect.h);
+	const smaller = Math.min(inkA.w * inkA.h, inkB.w * inkB.h);
 	if (shared.w * shared.h <= smaller * OVERLAP_RATIO) return undefined;
 	return layoutIssue('overlap', a, shared);
 }
@@ -301,6 +306,7 @@ function isLayoutBox(value: unknown): value is LayoutBox {
 		value.ancestors.every(isNumber) &&
 		typeof value.text === 'string' &&
 		isLayoutRect(value.rect) &&
+		(value.ink === undefined || isLayoutRect(value.ink)) &&
 		typeof value.clipped === 'boolean' &&
 		typeof value.decoration === 'boolean'
 	);
@@ -346,7 +352,7 @@ const MEASURE_SCRIPT = String.raw`(function () {
     });
     return t.replace(/\s+/g, " ").trim();
   }
-  function textRect(el) {
+  function textRect(el, fontSize, ink) {
     var l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
     var range = d.createRange();
     el.childNodes.forEach(function (c) {
@@ -354,8 +360,9 @@ const MEASURE_SCRIPT = String.raw`(function () {
       range.selectNodeContents(c);
       Array.prototype.forEach.call(range.getClientRects(), function (q) {
         if (q.width <= 0 || q.height <= 0) return;
-        l = Math.min(l, q.left); t = Math.min(t, q.top);
-        r = Math.max(r, q.right); b = Math.max(b, q.bottom);
+        var inset = ink ? Math.max(0, (q.height - fontSize) / 2) : 0;
+        l = Math.min(l, q.left); t = Math.min(t, q.top + inset);
+        r = Math.max(r, q.right); b = Math.max(b, q.bottom - inset);
       });
     });
     return r > l && b > t ? {x: l, y: t, w: r - l, h: b - t} : null;
@@ -377,9 +384,10 @@ const MEASURE_SCRIPT = String.raw`(function () {
       if (SKIP[el.nodeName.toUpperCase()]) return;
       var text = ownText(el);
       if (!text || isHidden(el)) return;
-      var rc = textRect(el);
-      if (!rc) return;
       var s = w.getComputedStyle(el);
+      var fontSize = parseFloat(s.fontSize) || 16;
+      var rc = textRect(el, fontSize, false);
+      if (!rc) return;
       var ancestors = [];
       for (var p = el.parentElement; p; p = p.parentElement) {
         if (ids.has(p)) ancestors.push(ids.get(p));
@@ -391,6 +399,7 @@ const MEASURE_SCRIPT = String.raw`(function () {
         ancestors: ancestors,
         text: text.slice(0, 40),
         rect: rc,
+        ink: textRect(el, fontSize, true) || rc,
         clipped: isClipped(el, rc),
         decoration: s.position === "absolute" && parseFloat(s.opacity) < 0.35
       });

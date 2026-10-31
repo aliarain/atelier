@@ -285,7 +285,16 @@ describe('layout check in Chrome', {skip: !availability.ok}, () => {
 			report.issues.map(issue => issue.kind),
 			['overlap'],
 		);
-		assert.deepEqual(report.issues[0]?.rect, {x: 200, y: 400, w: 300, h: 69});
+		assert.deepEqual(report.issues[0]?.rect, {x: 200, y: 405, w: 300, h: 60});
+	});
+
+	test('tight display leading under a kicker is not an overlap', async () => {
+		const report = await layoutOf({
+			html: `<body style="margin:0;padding:200px 120px"><div style="font:600 14px Helvetica;letter-spacing:.42em;text-transform:uppercase">New for autumn</div><h1 style="font:400 123px Didot,Georgia,serif;margin:10px 0 0"><span style="display:block;line-height:.94">Fall</span><span style="display:block;line-height:.94;font-style:italic">Menu</span></h1></body>`,
+			width: 1080,
+			height: 1080,
+		});
+		assert.deepEqual(report.issues, []);
 	});
 
 	test('reports text in the top of a 9:16 frame', async () => {
