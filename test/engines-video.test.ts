@@ -1,17 +1,18 @@
 import assert from 'node:assert/strict';
-import {mkdtemp, rm} from 'node:fs/promises';
+import {mkdtemp, readdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {before, describe, it, after} from 'node:test';
+import {after, before, describe, it} from 'node:test';
 import {
 	buildFfmpegArgs,
+	composeTimeoutMs,
 	effectiveTransitionS,
 	totalDurationS,
 	videoEngine,
 } from '../src/engines/video.ts';
 import type {VideoInput, VideoMotion} from '../src/engines/video.ts';
 import {execFileExec, isEngineFailure} from '../src/exec.ts';
-import type {EngineRunContext} from '../src/types.ts';
+import type {EngineRunContext, Exec} from '../src/types.ts';
 
 function sceneList(
 	motions: readonly VideoMotion[],
@@ -220,6 +221,62 @@ describe('totalDurationS', () => {
 	});
 });
 
+describe('effectiveTransitionS snaps to whole frames', () => {
+	const table: readonly (readonly [number, number, number])[] = [
+		// fps, transition_s, expected frames of overlap
+		[24, 0.001, 0],
+		[24, 0.01, 0],
+		[24, 0.02, 0],
+		[24, 0.04, 1],
+		[24, 0.5, 12],
+		[30, 0.001, 0],
+		[30, 0.01, 0],
+		[30, 0.02, 1],
+		[30, 0.04, 1],
+		[30, 0.5, 15],
+		[60, 0.001, 0],
+		[60, 0.01, 1],
+		[60, 0.02, 1],
+		[60, 0.04, 2],
+		[60, 0.5, 30],
+	];
+	for (const [fps, transitionS, frames] of table) {
+		it(`fps ${fps} transition ${transitionS}s overlaps ${frames} frames`, () => {
+			const input = inputOf({
+				fps,
+				transitionS,
+				scenes: sceneList(['still', 'still', 'still'], 3),
+			});
+			assert.equal(Math.round(effectiveTransitionS(input) * fps), frames);
+			assert.ok(Math.abs(effectiveTransitionS(input) * fps - frames) < 1e-9);
+		});
+	}
+
+	it('falls back to a plain concat when the fade is under one frame', () => {
+		const args = buildFfmpegArgs(
+			inputOf({fps: 24, transitionS: 0.01, scenes: sceneList(['still', 'still'], 3)}),
+			'/out/video.mp4',
+		);
+		assert.equal(
+			filterComplexOf(args).split(';').at(-1),
+			'[v0][v1]concat=n=2:v=1:a=0[vout]',
+		);
+	});
+});
+
+describe('composeTimeoutMs', () => {
+	it('is 60s plus 20s per second of video', () => {
+		assert.equal(composeTimeoutMs(inputOf({scenes: sceneList(['still'], 5)})), 160_000);
+	});
+
+	it('never passes ten minutes', () => {
+		assert.equal(
+			composeTimeoutMs(inputOf({scenes: sceneList(['still', 'still', 'still'], 60)})),
+			600_000,
+		);
+	});
+});
+
 describe('buildFfmpegArgs', () => {
 	it('builds the exact graph for two scenes without audio', () => {
 		const args = buildFfmpegArgs(inputOf({}), '/out/video.mp4');
@@ -399,6 +456,45 @@ describe('buildFfmpegArgs', () => {
 	});
 });
 
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+function contextFor(outDir: string, overrides: Partial<EngineRunContext> = {}): EngineRunContext {
+	return {
+		outDir,
+		cwd: outDir,
+		signal: AbortSignal.any([]),
+		exec: execFileExec,
+		env: {},
+		fetch,
+		...overrides,
+	};
+}
+
+async function processesMentioning(fragment: string): Promise<number> {
+	const result = await execFileExec({command: 'pgrep', args: ['-f', fragment]});
+	return result.code === 0 ? result.stdout.trim().split('\n').length : 0;
+}
+
+async function countFrames(path: string): Promise<number> {
+	const result = await execFileExec({
+		command: 'ffprobe',
+		args: [
+			'-v',
+			'error',
+			'-count_frames',
+			'-select_streams',
+			'v:0',
+			'-show_entries',
+			'stream=nb_read_frames',
+			'-of',
+			'csv=p=0',
+			path,
+		],
+	});
+	assert.equal(result.code, 0, result.stderr);
+	return Number(result.stdout.trim());
+}
+
 describe('video engine real ffmpeg', () => {
 	const probeTarget: {dir: string} = {dir: ''};
 
@@ -552,13 +648,183 @@ describe('video engine real ffmpeg', () => {
 		});
 	});
 
-	it('throws compose_failed when ffmpeg rejects the media', async () => {
-		const input = realInput({voiceover: join(probeTarget.dir, 'red.png')});
+	it('throws bad_input for a non-audio file used as the voiceover', async () => {
+		const bad = join(probeTarget.dir, 'red.png');
+		const input = realInput({voiceover: bad});
 		await assert.rejects(compose(input), error => {
 			assert.ok(isEngineFailure(error));
-			assert.equal(error.code, 'compose_failed');
-			assert.equal(error.retryable, true);
+			assert.equal(error.code, 'bad_input');
+			assert.equal(error.retryable, false);
+			assert.equal(error.message, `${bad} cannot be used: it has no audio stream`);
 			return true;
 		});
 	});
+
+	it('throws bad_input fast for a corrupt png and leaves no ffmpeg or mp4 behind', async () => {
+		const bad = join(probeTarget.dir, 'corrupt.png');
+		await writeFile(bad, Buffer.concat([PNG_SIGNATURE, Buffer.alloc(3000, 0xff)]));
+		const outDir = await mkdtemp(join(probeTarget.dir, 'out-'));
+		const started = Date.now();
+		await assert.rejects(
+			videoEngine.run({
+				input: realInput({
+					scenes: [{image: bad, durationS: 1, motion: 'still'}],
+				}),
+				ctx: contextFor(outDir),
+			}),
+			error => {
+				assert.ok(isEngineFailure(error));
+				assert.equal(error.code, 'bad_input');
+				assert.equal(error.retryable, false);
+				assert.equal(
+					error.message,
+					`${bad} cannot be used: its size 0x0 is not valid, the file is corrupt`,
+				);
+				return true;
+			},
+		);
+		assert.ok(Date.now() - started < 5000, `took ${Date.now() - started}ms`);
+		assert.deepEqual(await readdir(outDir), []);
+		assert.equal(await processesMentioning(probeTarget.dir), 0);
+	});
+
+	it('throws bad_input for a png whose header reads but whose pixels do not decode', async () => {
+		const bad = join(probeTarget.dir, 'truncated.png');
+		const whole = await readFile(join(probeTarget.dir, 'red.png'));
+		await writeFile(bad, whole.subarray(0, 40));
+		await assert.rejects(
+			compose(realInput({scenes: [{image: bad, durationS: 1, motion: 'still'}]})),
+			error => {
+				assert.ok(isEngineFailure(error));
+				assert.equal(error.code, 'bad_input');
+				assert.equal(error.retryable, false);
+				assert.ok(error.message.startsWith(`${bad} cannot be used: `), error.message);
+				return true;
+			},
+		);
+	});
+
+	it('stops ffmpeg, resolves after it exited and deletes the partial mp4 on abort', async () => {
+		const outDir = await mkdtemp(join(probeTarget.dir, 'out-'));
+		const controller = new AbortController();
+		const exec: Exec = params => {
+			if (params.args.includes('-filter_complex')) {
+				setTimeout(() => controller.abort(), 700);
+			}
+			return execFileExec(params);
+		};
+		const input = realInput({
+			width: 1080,
+			height: 1920,
+			scenes: Array.from({length: 6}, () => ({
+				image: join(probeTarget.dir, 'red.png'),
+				durationS: 30,
+				motion: 'zoom_in' as const,
+			})),
+		});
+		const started = Date.now();
+		await assert.rejects(
+			videoEngine.run({input, ctx: contextFor(outDir, {exec, signal: controller.signal})}),
+			error => {
+				assert.ok(isEngineFailure(error));
+				assert.equal(error.code, 'cancelled');
+				assert.equal(error.retryable, false);
+				return true;
+			},
+		);
+		assert.ok(Date.now() - started < 8000, `took ${Date.now() - started}ms`);
+		assert.equal(await processesMentioning(outDir), 0);
+		assert.deepEqual(await readdir(outDir), []);
+	});
+
+	it('throws timeout, not retryable, when the compose runs out of time', async () => {
+		const outDir = await mkdtemp(join(probeTarget.dir, 'out-'));
+		const exec: Exec = async params => {
+			if (!params.args.includes('-filter_complex')) return execFileExec(params);
+			await writeFile(join(outDir, 'video.mp4'), 'partial');
+			return {code: 1, stdout: '', stderr: '', timedOut: true, signal: 'SIGTERM'};
+		};
+		await assert.rejects(
+			videoEngine.run({
+				input: realInput({
+					fps: 30,
+					transitionS: 0.5,
+					scenes: [
+						{image: join(probeTarget.dir, 'red.png'), durationS: 2.5, motion: 'still'},
+						{image: join(probeTarget.dir, 'blue.png'), durationS: 2.5, motion: 'still'},
+					],
+				}),
+				ctx: contextFor(outDir, {exec}),
+			}),
+			error => {
+				assert.ok(isEngineFailure(error));
+				assert.equal(error.code, 'timeout');
+				assert.equal(error.retryable, false);
+				assert.equal(error.message, 'ffmpeg took longer than 150s and was stopped');
+				return true;
+			},
+		);
+		assert.deepEqual(await readdir(outDir), []);
+	});
+
+	it('throws missing_tool when ffprobe is not installed', async () => {
+		const outDir = await mkdtemp(join(probeTarget.dir, 'out-'));
+		const exec: Exec = params =>
+			execFileExec({
+				...params,
+				command: params.command === 'ffprobe' ? 'atelier-no-such-ffprobe' : params.command,
+			});
+		await assert.rejects(
+			videoEngine.run({input: realInput({}), ctx: contextFor(outDir, {exec})}),
+			error => {
+				assert.ok(isEngineFailure(error));
+				assert.equal(error.code, 'missing_tool');
+				assert.equal(error.retryable, false);
+				assert.equal(error.message, 'ffprobe is not installed or not on PATH');
+				return true;
+			},
+		);
+	});
+
+	it('keeps compose_failed retryable for an ffmpeg error that is not environmental', async () => {
+		const outDir = await mkdtemp(join(probeTarget.dir, 'out-'));
+		const exec: Exec = async params =>
+			params.args.includes('-filter_complex')
+				? {code: 1, stdout: '', stderr: 'Error: boom'}
+				: execFileExec(params);
+		await assert.rejects(
+			videoEngine.run({input: realInput({}), ctx: contextFor(outDir, {exec})}),
+			error => {
+				assert.ok(isEngineFailure(error));
+				assert.equal(error.code, 'compose_failed');
+				assert.equal(error.retryable, true);
+				assert.equal(error.message, 'ffmpeg exited with code 1: Error: boom');
+				return true;
+			},
+		);
+	});
+
+	for (const fps of [24, 30, 60]) {
+		for (const transitionS of [0.001, 0.01, 0.02, 0.04, 0.5]) {
+			it(`keeps all three scenes at ${fps} fps with a ${transitionS}s transition`, async () => {
+				const input = realInput({
+					width: 160,
+					height: 160,
+					fps,
+					transitionS,
+					scenes: ['red', 'blue', 'green'].map(color => ({
+						image: join(probeTarget.dir, `${color}.png`),
+						durationS: 3,
+						motion: 'still' as const,
+					})),
+				});
+				const frames = await countFrames(await compose(input));
+				const expected = totalDurationS(input);
+				assert.ok(
+					Math.abs(frames / fps - expected) <= 1 / fps + 1e-9,
+					`${frames} frames is ${frames / fps}s, expected ${expected}s`,
+				);
+			});
+		}
+	}
 });

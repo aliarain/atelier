@@ -1,10 +1,13 @@
-import {access, stat} from 'node:fs/promises';
+import {access, rm, stat} from 'node:fs/promises';
 import {isAbsolute, join} from 'node:path';
-import {engineFailure, stderrTail} from '../exec.ts';
+import {engineFailure, environmentFailure, stderrTail} from '../exec.ts';
+import type {EngineFailure} from '../exec.ts';
 import type {
 	Availability,
 	Engine,
+	EngineRunContext,
 	Exec,
+	ExecResult,
 	JsonObjectSchema,
 	MediaOutput,
 	Parsed,
@@ -51,7 +54,12 @@ const MOTION_ZOOM = 1.15;
 const MOTION_TRAVEL = 0.15;
 // Motion scenes are zoomed on a 2x canvas: zoompan snaps to whole pixels, so a 1x source jitters.
 const MOTION_SUPERSAMPLE = 2;
-const COMPOSE_TIMEOUT_MS = 10 * 60 * 1000;
+const COMPOSE_BASE_TIMEOUT_MS = 60_000;
+const COMPOSE_TIMEOUT_PER_SECOND_MS = 20_000;
+const COMPOSE_MAX_TIMEOUT_MS = 10 * 60 * 1000;
+const PROBE_TIMEOUT_MS = 15_000;
+const DECODE_TIMEOUT_MS = 30_000;
+const MAX_IMAGE_SIDE_PX = 16_384;
 
 const SCHEMA: JsonObjectSchema = {
 	type: 'object',
@@ -254,10 +262,13 @@ export function num(value: number): string {
 }
 
 // The crossfade can never exceed half of the shortest scene, or a scene would be mostly blend.
+// It is snapped to a whole number of frames: xfade drops a scene whose overlap is shorter than
+// one frame, and a fade under one frame is invisible anyway, so that case falls back to a cut.
 export function effectiveTransitionS(input: VideoInput): number {
 	if (input.scenes.length < 2) return 0;
 	const shortest = Math.min(...input.scenes.map(scene => scene.durationS));
-	return Math.min(input.transitionS, shortest / 2);
+	const capped = Math.min(input.transitionS, shortest / 2);
+	return Math.round(capped * input.fps) / input.fps;
 }
 
 export function totalDurationS(input: VideoInput): number {
@@ -436,6 +447,160 @@ async function checkAvailable(params: {
 	return {ok: false, reason: 'ffmpeg is not installed or not on PATH'};
 }
 
+// A long compose gets proportionally longer, but never past a cap: a stuck ffmpeg must not hold a job forever.
+export function composeTimeoutMs(input: VideoInput): number {
+	const scaled =
+		COMPOSE_BASE_TIMEOUT_MS + totalDurationS(input) * COMPOSE_TIMEOUT_PER_SECOND_MS;
+	return Math.round(Math.min(scaled, COMPOSE_MAX_TIMEOUT_MS));
+}
+
+function cancelled(): EngineFailure {
+	return engineFailure({code: 'cancelled', message: 'The job was cancelled.', retryable: false});
+}
+
+function badInput(path: string, reason: string): EngineFailure {
+	return engineFailure({
+		code: 'bad_input',
+		message: `${path} cannot be used: ${reason}`,
+		retryable: false,
+	});
+}
+
+function firstLine(text: string): string {
+	return text.trim().split('\n')[0] ?? '';
+}
+
+async function runTool(params: {
+	readonly ctx: EngineRunContext;
+	readonly tool: string;
+	readonly args: readonly string[];
+	readonly timeoutMs: number;
+}): Promise<ExecResult> {
+	const {ctx, tool, args, timeoutMs} = params;
+	const result = await ctx.exec({
+		command: tool,
+		args,
+		cwd: ctx.cwd,
+		signal: ctx.signal,
+		timeoutMs,
+	});
+	if (ctx.signal.aborted) throw cancelled();
+	const environment = environmentFailure({tool, result, timeoutMs});
+	if (environment !== undefined) throw environment;
+	return result;
+}
+
+interface ProbedStream {
+	readonly type: string;
+	readonly width: number;
+	readonly height: number;
+}
+
+function asRecord(value: unknown): RawRecord | undefined {
+	return isRecord(value) ? value : undefined;
+}
+
+function probedStreams(stdout: string): readonly ProbedStream[] {
+	try {
+		const streams = asRecord(JSON.parse(stdout))?.['streams'];
+		if (!Array.isArray(streams)) return [];
+		return streams.flatMap((raw): readonly ProbedStream[] => {
+			const stream = asRecord(raw);
+			if (stream === undefined) return [];
+			return [
+				{
+					type: String(stream['codec_type'] ?? ''),
+					width: Number(stream['width'] ?? 0),
+					height: Number(stream['height'] ?? 0),
+				},
+			];
+		});
+	} catch {
+		return [];
+	}
+}
+
+async function probeStreams(
+	ctx: EngineRunContext,
+	path: string,
+): Promise<readonly ProbedStream[]> {
+	const result = await runTool({
+		ctx,
+		tool: 'ffprobe',
+		args: ['-v', 'error', '-show_entries', 'stream=codec_type,width,height', '-of', 'json', '-i', path],
+		timeoutMs: PROBE_TIMEOUT_MS,
+	});
+	return result.code === 0 ? probedStreams(result.stdout) : [];
+}
+
+function sideIsSane(side: number): boolean {
+	return Number.isInteger(side) && side >= 1 && side <= MAX_IMAGE_SIDE_PX;
+}
+
+// Decoding one frame is what catches a truncated file whose header still reads fine.
+async function checkImage(ctx: EngineRunContext, path: string): Promise<void> {
+	const frame = (await probeStreams(ctx, path)).find(stream => stream.type === 'video');
+	if (frame === undefined) throw badInput(path, 'it is not an image ffmpeg can read');
+	if (!sideIsSane(frame.width) || !sideIsSane(frame.height)) {
+		throw badInput(path, `its size ${frame.width}x${frame.height} is not valid, the file is corrupt`);
+	}
+	const decoded = await runTool({
+		ctx,
+		tool: 'ffmpeg',
+		args: ['-nostdin', '-v', 'error', '-i', path, '-frames:v', '1', '-f', 'null', '-'],
+		timeoutMs: DECODE_TIMEOUT_MS,
+	});
+	if (decoded.code === 0) return;
+	throw badInput(path, `it does not decode (${firstLine(decoded.stderr)})`);
+}
+
+async function checkAudio(ctx: EngineRunContext, path: string): Promise<void> {
+	const streams = await probeStreams(ctx, path);
+	if (!streams.some(stream => stream.type === 'audio')) {
+		throw badInput(path, 'it has no audio stream');
+	}
+	const decoded = await runTool({
+		ctx,
+		tool: 'ffmpeg',
+		args: ['-nostdin', '-v', 'error', '-i', path, '-vn', '-t', '1', '-f', 'null', '-'],
+		timeoutMs: DECODE_TIMEOUT_MS,
+	});
+	if (decoded.code === 0) return;
+	throw badInput(path, `its audio does not decode (${firstLine(decoded.stderr)})`);
+}
+
+// ffmpeg can hang for good on a corrupt still, so every input is proven before the compose starts.
+async function validateInputs(input: VideoInput, ctx: EngineRunContext): Promise<void> {
+	const images = new Set(input.scenes.map(scene => scene.image));
+	for (const path of images) await checkImage(ctx, path);
+	const audio = new Set(
+		[input.voiceover, input.music].filter((path): path is string => path !== undefined),
+	);
+	for (const path of audio) await checkAudio(ctx, path);
+}
+
+async function compose(
+	input: VideoInput,
+	ctx: EngineRunContext,
+	path: string,
+): Promise<readonly MediaOutput[]> {
+	const result = await runTool({
+		ctx,
+		tool: 'ffmpeg',
+		args: buildFfmpegArgs(input, path),
+		timeoutMs: composeTimeoutMs(input),
+	});
+	if (result.code !== 0) {
+		throw engineFailure({
+			code: 'compose_failed',
+			message: `ffmpeg exited with code ${result.code}: ${stderrTail(result.stderr)}`,
+			retryable: true,
+		});
+	}
+	const {size} = await stat(path);
+	return [{path, kind: 'video', bytes: size}];
+}
+
 export const videoEngine: Engine<VideoInput> = {
 	id: 'video',
 	kind: 'video',
@@ -455,21 +620,12 @@ export const videoEngine: Engine<VideoInput> = {
 			});
 		}
 		const path = join(ctx.outDir, 'video.mp4');
-		const result = await ctx.exec({
-			command: 'ffmpeg',
-			args: buildFfmpegArgs(input, path),
-			cwd: ctx.cwd,
-			signal: ctx.signal,
-			timeoutMs: COMPOSE_TIMEOUT_MS,
-		});
-		if (result.code !== 0) {
-			throw engineFailure({
-				code: 'compose_failed',
-				message: `ffmpeg exited with code ${result.code}: ${stderrTail(result.stderr)}`,
-				retryable: true,
-			});
+		try {
+			await validateInputs(input, ctx);
+			return await compose(input, ctx, path);
+		} catch (error) {
+			await rm(path, {force: true});
+			throw error;
 		}
-		const {size} = await stat(path);
-		return [{path, kind: 'video', bytes: size}];
 	},
 };

@@ -1,10 +1,12 @@
 import {rm, stat, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {engineFailure, stderrTail} from '../exec.ts';
+import {engineFailure, environmentFailure, stderrTail} from '../exec.ts';
 import type {
 	Availability,
 	Engine,
+	EngineRunContext,
 	Exec,
+	ExecResult,
 	MediaOutput,
 	Parsed,
 } from '../types.ts';
@@ -18,6 +20,8 @@ const LISTED_ENGLISH_VOICES = 10;
 const PROBE_TIMEOUT_MS = 15_000;
 const SAY_TIMEOUT_MS = 300_000;
 const ENCODE_TIMEOUT_MS = 120_000;
+// say is far quieter or louder per voice; normalising lands every voice in the review's loudness range.
+const LOUDNESS_FILTER = 'loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000';
 
 export interface VoiceInput {
 	readonly text: string;
@@ -134,6 +138,98 @@ async function runsCleanly(
 	return result.code === 0;
 }
 
+// Stops the job when the tool is missing, timed out or the job was cancelled, in that order of
+// plainness; any other outcome is returned for the caller to judge.
+async function runTool(params: {
+	readonly ctx: EngineRunContext;
+	readonly tool: string;
+	readonly args: readonly string[];
+	readonly timeoutMs: number;
+	readonly cwd?: string;
+}): Promise<ExecResult> {
+	const {ctx, tool, args, timeoutMs, cwd} = params;
+	const result = await ctx.exec({
+		command: tool,
+		args,
+		cwd,
+		signal: ctx.signal,
+		timeoutMs,
+	});
+	if (ctx.signal.aborted) {
+		throw engineFailure({code: 'cancelled', message: 'The job was cancelled.', retryable: false});
+	}
+	const environment = environmentFailure({tool, result, timeoutMs});
+	if (environment !== undefined) throw environment;
+	return result;
+}
+
+async function speak(params: {
+	readonly input: VoiceInput;
+	readonly ctx: EngineRunContext;
+	readonly aiffPath: string;
+	readonly m4aPath: string;
+}): Promise<readonly MediaOutput[]> {
+	const {input, ctx, aiffPath, m4aPath} = params;
+	const listing = await runTool({ctx, tool: SAY, args: ['-v', '?'], timeoutMs: PROBE_TIMEOUT_MS});
+	if (listing.code !== 0) {
+		throw engineFailure({
+			code: 'say_failed',
+			message: `Could not list voices.\n${stderrTail(listing.stderr)}`,
+			retryable: true,
+		});
+	}
+
+	// say exits 0 and silently falls back to the default voice for an unknown name,
+	// so the name is checked against the listing before anything is spoken.
+	const voices = parseVoices(listing.stdout);
+	const voice = findVoice(voices, input.voice ?? DEFAULT_VOICE);
+	if (voice === undefined) {
+		throw engineFailure({
+			code: 'unknown_voice',
+			message: `Unknown voice "${input.voice ?? DEFAULT_VOICE}". English voices include: ${englishVoiceNames(voices).join(', ')}.`,
+			retryable: false,
+		});
+	}
+
+	const scriptPath = join(ctx.outDir, 'script.txt');
+	await writeFile(scriptPath, input.text);
+
+	const rateArgs = input.rate === undefined ? [] : ['-r', String(input.rate)];
+	const spoken = await runTool({
+		ctx,
+		tool: SAY,
+		args: ['-v', voice.name, ...rateArgs, '-o', aiffPath, '-f', scriptPath],
+		timeoutMs: SAY_TIMEOUT_MS,
+		cwd: ctx.cwd,
+	});
+	if (spoken.code !== 0) {
+		throw engineFailure({
+			code: 'say_failed',
+			message: `say exited with code ${spoken.code}.\n${stderrTail(spoken.stderr)}`,
+			retryable: true,
+		});
+	}
+
+	const encoded = await runTool({
+		ctx,
+		tool: 'ffmpeg',
+		args: ['-y', '-i', aiffPath, '-af', LOUDNESS_FILTER, '-c:a', 'aac', '-b:a', '192k', m4aPath],
+		timeoutMs: ENCODE_TIMEOUT_MS,
+		cwd: ctx.cwd,
+	});
+	await rm(aiffPath, {force: true});
+
+	const bytes = encoded.code === 0 ? await fileBytes(m4aPath) : undefined;
+	if (bytes === undefined) {
+		throw engineFailure({
+			code: 'encode_failed',
+			message: `ffmpeg exited with code ${encoded.code} and wrote no m4a.\n${stderrTail(encoded.stderr)}`,
+			retryable: true,
+		});
+	}
+	return [{path: m4aPath, kind: 'audio', bytes}];
+}
+
 export const voiceEngine: Engine<VoiceInput> = {
 	id: 'voice',
 	kind: 'audio',
@@ -173,70 +269,13 @@ export const voiceEngine: Engine<VoiceInput> = {
 		return {ok: true};
 	},
 	run: async ({input, ctx}): Promise<readonly MediaOutput[]> => {
-		const listing = await ctx.exec({
-			command: SAY,
-			args: ['-v', '?'],
-			signal: ctx.signal,
-			timeoutMs: PROBE_TIMEOUT_MS,
-		});
-		if (listing.code !== 0) {
-			throw engineFailure({
-				code: 'say_failed',
-				message: `Could not list voices.\n${stderrTail(listing.stderr)}`,
-				retryable: true,
-			});
-		}
-
-		// say exits 0 and silently falls back to the default voice for an unknown name,
-		// so the name is checked against the listing before anything is spoken.
-		const voices = parseVoices(listing.stdout);
-		const voice = findVoice(voices, input.voice ?? DEFAULT_VOICE);
-		if (voice === undefined) {
-			throw engineFailure({
-				code: 'unknown_voice',
-				message: `Unknown voice "${input.voice ?? DEFAULT_VOICE}". English voices include: ${englishVoiceNames(voices).join(', ')}.`,
-				retryable: false,
-			});
-		}
-
-		const scriptPath = join(ctx.outDir, 'script.txt');
 		const aiffPath = join(ctx.outDir, 'voice.aiff');
 		const m4aPath = join(ctx.outDir, 'voice.m4a');
-		await writeFile(scriptPath, input.text);
-
-		const rateArgs = input.rate === undefined ? [] : ['-r', String(input.rate)];
-		const spoken = await ctx.exec({
-			command: SAY,
-			args: ['-v', voice.name, ...rateArgs, '-o', aiffPath, '-f', scriptPath],
-			cwd: ctx.cwd,
-			signal: ctx.signal,
-			timeoutMs: SAY_TIMEOUT_MS,
-		});
-		if (spoken.code !== 0) {
-			throw engineFailure({
-				code: 'say_failed',
-				message: `say exited with code ${spoken.code}.\n${stderrTail(spoken.stderr)}`,
-				retryable: true,
-			});
+		try {
+			return await speak({input, ctx, aiffPath, m4aPath});
+		} catch (error) {
+			await Promise.all([rm(aiffPath, {force: true}), rm(m4aPath, {force: true})]);
+			throw error;
 		}
-
-		const encoded = await ctx.exec({
-			command: 'ffmpeg',
-			args: ['-y', '-i', aiffPath, '-c:a', 'aac', '-b:a', '192k', m4aPath],
-			cwd: ctx.cwd,
-			signal: ctx.signal,
-			timeoutMs: ENCODE_TIMEOUT_MS,
-		});
-		await rm(aiffPath, {force: true});
-
-		const bytes = encoded.code === 0 ? await fileBytes(m4aPath) : undefined;
-		if (bytes === undefined) {
-			throw engineFailure({
-				code: 'encode_failed',
-				message: `ffmpeg exited with code ${encoded.code} and wrote no m4a.\n${stderrTail(encoded.stderr)}`,
-				retryable: true,
-			});
-		}
-		return [{path: m4aPath, kind: 'audio', bytes}];
 	},
 };

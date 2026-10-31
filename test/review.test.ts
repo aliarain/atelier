@@ -329,3 +329,59 @@ test('reviewMedia rejects a corrupt file', async () => {
 		/ff(?:probe|mpeg) could not read .*junk\.png/,
 	);
 });
+
+await ffmpeg([
+	...['-f', 'lavfi', '-i', 'color=c=0x141414:s=540x960:d=3:r=24'],
+	...['-vf', 'drawbox=x=40:y=400:w=200:h=30:c=white:t=fill'],
+	...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', file('dark-slide.mp4')],
+]);
+await ffmpeg([
+	...['-f', 'lavfi', '-i', 'color=c=black:s=540x960:d=3:r=24'],
+	...['-vf', 'drawbox=x=250:y=450:w=12:h=12:c=white:t=fill'],
+	...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', file('black-logo.mp4')],
+]);
+await ffmpeg([
+	...['-f', 'lavfi', '-i', 'color=c=black:s=540x960:d=3:r=24'],
+	...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', file('all-black.mp4')],
+]);
+
+test('reviewMedia passes a #141414 slide with a white headline', async () => {
+	const review = await reviewMedia({path: file('dark-slide.mp4'), exec: execFileExec});
+	assert.equal(statuses(review.checks)['black_frames'], 'pass');
+});
+
+test('reviewMedia passes a #000 slide with a small white logo', async () => {
+	const review = await reviewMedia({path: file('black-logo.mp4'), exec: execFileExec});
+	assert.equal(statuses(review.checks)['black_frames'], 'pass');
+});
+
+test('reviewMedia still fails a video that is black in every frame', async () => {
+	const review = await reviewMedia({path: file('all-black.mp4'), exec: execFileExec});
+	const black = review.checks.find(c => c.id === 'black_frames');
+	assert.equal(black?.status, 'fail');
+	assert.equal(black?.detail, 'black for 2.96s (0.00s to 2.96s)');
+});
+
+test('reviewMedia warns on a held still by default and skips the freeze check on request', async () => {
+	const held = await reviewMedia({path: file('dark-slide.mp4'), exec: execFileExec});
+	assert.equal(statuses(held.checks)['frozen_frames'], 'warn');
+	const still = await reviewMedia({
+		path: file('dark-slide.mp4'),
+		exec: execFileExec,
+		expectStill: true,
+	});
+	assert.deepEqual(still.checks.find(c => c.id === 'frozen_frames'), {
+		id: 'frozen_frames',
+		status: 'pass',
+		detail: 'Still scenes, freeze check skipped',
+	});
+});
+
+test('reviewMedia says a missing ffprobe is not installed', async () => {
+	const missing = (params: Parameters<typeof execFileExec>[0]): ReturnType<typeof execFileExec> =>
+		execFileExec({...params, command: 'atelier-no-such-ffprobe'});
+	await assert.rejects(
+		reviewMedia({path: file('dark-slide.mp4'), exec: missing}),
+		{message: 'ffprobe is not installed or not on PATH'},
+	);
+});

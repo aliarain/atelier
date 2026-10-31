@@ -33,6 +33,8 @@ export interface Measurements {
 	readonly probe: MediaProbe;
 	readonly detections: Detections;
 	readonly luma?: LumaStats;
+	// The caller made a slideshow of stills, so a long hold is the design, not a stall.
+	readonly expectStill?: boolean;
 }
 
 export interface CheckRule {
@@ -42,7 +44,9 @@ export interface CheckRule {
 	readonly evaluate: (measurements: Measurements) => ReviewCheck;
 }
 
-const VIDEO_FILTER = 'blackdetect=d=0.4:pix_th=0.10,freezedetect=n=0.003:d=1.5';
+// pic_th=1 flags a frame only when every pixel is black. A dark slide with a headline or a small
+// logo is designed, not broken, and any lower ratio reads it as a black screen.
+const VIDEO_FILTER = 'blackdetect=d=0.4:pix_th=0.10:pic_th=1,freezedetect=n=0.003:d=1.5';
 const AUDIO_FILTER = 'silencedetect=n=-45dB:d=0.8,ebur128=peak=true';
 const IMAGE_FILTER = 'signalstats,metadata=print:file=-';
 
@@ -362,7 +366,10 @@ function evaluateBlackFrames({detections}: Measurements): ReviewCheck {
 	return check('black_frames', 'pass', 'no black frames');
 }
 
-function evaluateFrozenFrames({detections}: Measurements): ReviewCheck {
+function evaluateFrozenFrames({detections, expectStill}: Measurements): ReviewCheck {
+	if (expectStill === true) {
+		return check('frozen_frames', 'pass', 'Still scenes, freeze check skipped');
+	}
 	const frozen = detections.freeze.filter(i => lengthOf(i) > FREEZE_WARN_S);
 	const longest = longestOf(frozen);
 	if (longest === undefined) {
@@ -537,6 +544,12 @@ async function run(params: {
 	const {exec, command, args, path, timeoutMs, signal} = params;
 	const result = await exec({command, args, timeoutMs, signal});
 	if (result.code === 0) return result;
+	if (result.errno === 'ENOENT') {
+		throw new Error(`${command} is not installed or not on PATH`);
+	}
+	if (result.timedOut === true) {
+		throw new Error(`${command} took longer than ${Math.round(timeoutMs / 1000)}s reading ${path}`);
+	}
 	throw new Error(
 		`${command} could not read ${path} (exit ${result.code}): ${stderrTail(result.stderr)}`,
 	);
@@ -576,8 +589,9 @@ export async function reviewMedia(params: {
 	readonly path: string;
 	readonly exec: Exec;
 	readonly signal?: AbortSignal;
+	readonly expectStill?: boolean;
 }): Promise<Review> {
-	const {path, exec, signal} = params;
+	const {path, exec, signal, expectStill} = params;
 	const bytes = await sizeOf(path);
 	const probed = await run({
 		exec,
@@ -588,7 +602,8 @@ export async function reviewMedia(params: {
 		signal,
 	});
 	const probe = parseProbe(probed.stdout, bytes, mediaKindOf(path));
-	const measurements = await measure({path, probe, exec, signal});
+	const measured = await measure({path, probe, exec, signal});
+	const measurements: Measurements = {...measured, expectStill};
 	const checks = runChecks(measurements);
 	return {path, probe, checks, verdict: worstStatus(checks)};
 }

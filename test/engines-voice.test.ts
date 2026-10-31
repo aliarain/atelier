@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {mkdtemp, readdir, readFile, rm} from 'node:fs/promises';
+import {mkdtemp, readdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {describe, test} from 'node:test';
@@ -10,6 +10,7 @@ import {
 	parseVoices,
 	voiceEngine,
 } from '../src/engines/voice.ts';
+import {reviewMedia} from '../src/review.ts';
 import type {Availability, EngineRunContext, Exec} from '../src/types.ts';
 
 // The first 20 lines of a real `say -v ?` on macOS, repeats included.
@@ -254,6 +255,120 @@ describe('voiceEngine', () => {
 				'script.txt',
 				'voice.m4a',
 			]);
+			await rm(outDir, {recursive: true, force: true});
+		},
+	);
+});
+
+describe('voiceEngine failures', () => {
+	function scripted(
+		onEncode: (args: readonly string[]) => Promise<Awaited<ReturnType<Exec>>>,
+	): Exec {
+		return async ({command, args}) => {
+			if (args.join(' ') === '-v ?') return {code: 0, stdout: SAY_SAMPLE, stderr: ''};
+			if (command === '/usr/bin/say') {
+				const out = args[args.indexOf('-o') + 1] ?? '';
+				await writeFile(out, 'aiff bytes');
+				return {code: 0, stdout: '', stderr: ''};
+			}
+			return onEncode(args);
+		};
+	}
+
+	test('reports a missing ffmpeg plainly and leaves no audio files behind', async () => {
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-voice-noffmpeg-'));
+		const exec = scripted(async args => {
+			await writeFile(args.at(-1) ?? '', 'partial');
+			return {code: 1, stdout: '', stderr: 'spawn ffmpeg ENOENT', errno: 'ENOENT'};
+		});
+		await assert.rejects(
+			voiceEngine.run({input: {text: 'Hi', voice: 'Daniel'}, ctx: contextFor(outDir, {exec})}),
+			(error: unknown) =>
+				isEngineFailure(error) &&
+				error.code === 'missing_tool' &&
+				!error.retryable &&
+				error.message === 'ffmpeg is not installed or not on PATH',
+		);
+		assert.deepEqual(await readdir(outDir), ['script.txt']);
+		await rm(outDir, {recursive: true, force: true});
+	});
+
+	test('reports an encode that ran out of time as a non-retryable timeout', async () => {
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-voice-timeout-'));
+		const exec = scripted(async args => {
+			await writeFile(args.at(-1) ?? '', 'partial');
+			return {code: 1, stdout: '', stderr: '', timedOut: true, signal: 'SIGTERM'};
+		});
+		await assert.rejects(
+			voiceEngine.run({input: {text: 'Hi', voice: 'Daniel'}, ctx: contextFor(outDir, {exec})}),
+			(error: unknown) =>
+				isEngineFailure(error) &&
+				error.code === 'timeout' &&
+				!error.retryable &&
+				error.message === 'ffmpeg took longer than 120s and was stopped',
+		);
+		assert.deepEqual(await readdir(outDir), ['script.txt']);
+		await rm(outDir, {recursive: true, force: true});
+	});
+
+	test('deletes the partial m4a when the encode fails for another reason', async () => {
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-voice-partial-'));
+		const exec = scripted(async args => {
+			await writeFile(args.at(-1) ?? '', 'partial');
+			return {code: 1, stdout: '', stderr: 'Invalid data'};
+		});
+		await assert.rejects(
+			voiceEngine.run({input: {text: 'Hi', voice: 'Daniel'}, ctx: contextFor(outDir, {exec})}),
+			(error: unknown) =>
+				isEngineFailure(error) && error.code === 'encode_failed' && error.retryable,
+		);
+		assert.deepEqual(await readdir(outDir), ['script.txt']);
+		await rm(outDir, {recursive: true, force: true});
+	});
+
+	test('encodes with loudness normalisation', async () => {
+		const outDir = await mkdtemp(join(tmpdir(), 'atelier-voice-filter-'));
+		const seen: (readonly string[])[] = [];
+		const exec = scripted(async args => {
+			seen.push(args);
+			await writeFile(args.at(-1) ?? '', 'encoded');
+			return {code: 0, stdout: '', stderr: ''};
+		});
+		await voiceEngine.run({input: {text: 'Hi', voice: 'Daniel'}, ctx: contextFor(outDir, {exec})});
+		assert.deepEqual(seen, [
+			[
+				'-y',
+				'-i',
+				join(outDir, 'voice.aiff'),
+				'-af',
+				'loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000',
+				'-c:a',
+				'aac',
+				'-b:a',
+				'192k',
+				join(outDir, 'voice.m4a'),
+			],
+		]);
+		await rm(outDir, {recursive: true, force: true});
+	});
+
+	test(
+		'lands the Fred voice inside the review loudness range',
+		{skip: !availability.ok},
+		async () => {
+			const outDir = await mkdtemp(join(tmpdir(), 'atelier-voice-fred-'));
+			const outputs = await voiceEngine.run({
+				input: {
+					text: 'Welcome to the product tour. In the next minute we will walk through three features.',
+					voice: 'Fred',
+				},
+				ctx: contextFor(outDir),
+			});
+			const review = await reviewMedia({path: outputs[0]?.path ?? '', exec: execFileExec});
+			const loudness = review.checks.find(check => check.id === 'loudness');
+			assert.equal(loudness?.status, 'pass');
+			const lufs = Number(loudness?.detail.split(' ')[0]);
+			assert.ok(lufs >= -20 && lufs <= -12, `${lufs} LUFS`);
 			await rm(outDir, {recursive: true, force: true});
 		},
 	);
