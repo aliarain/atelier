@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {createJob} from '../src/jobs.ts';
-import {FRESH_RUN, midRunNudge, stopNudge, studioReminder, trackTool} from '../src/policy.ts';
+import {
+	FRESH_RUN,
+	midRunNudge,
+	plainTitle,
+	stopNudge,
+	studioReminder,
+	trackTool,
+} from '../src/policy.ts';
 import type {Job} from '../src/types.ts';
 
 const job = (overrides: Partial<Job>): Job => ({
@@ -16,6 +23,14 @@ const job = (overrides: Partial<Job>): Job => ({
 		now: 1,
 	}),
 	...overrides,
+});
+
+test('titles decode HTML entities, collapse whitespace and fall back when empty', () => {
+	assert.equal(plainTitle('Ember &amp; Oak  Fall\nMenu', 'design'), 'Ember & Oak Fall Menu');
+	assert.equal(plainTitle('&lt;b&gt; &quot;hi&quot; &#39;x&#39; &amp;amp;', 'design'), '<b> "hi" \'x\' &amp;');
+	assert.equal(plainTitle('   ', 'design'), 'design');
+	assert.equal(plainTitle(42, 'video'), 'video');
+	assert.equal(plainTitle('x'.repeat(200), 'design').length, 120);
 });
 
 test('no reminder when every job in the session is presented or finished', () => {

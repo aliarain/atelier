@@ -15,6 +15,7 @@ import {
 import {
 	FRESH_RUN,
 	midRunNudge,
+	plainTitle,
 	type RunProgress,
 	stopNudge,
 	studioReminder,
@@ -222,7 +223,7 @@ export default function studio(cmd: ModApi): void {
 				if (!approved) return {ok: false, error: 'The person did not approve this paid run. Offer a free engine or ask them.'};
 			}
 
-			const title = String(input.title ?? engine.id).slice(0, 120);
+			const title = plainTitle(input.title, engine.id);
 			const controller = new AbortController();
 			signal?.addEventListener('abort', () => controller.abort(), {once: true});
 			const job = await runJob({

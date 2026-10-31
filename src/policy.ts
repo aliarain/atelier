@@ -1,6 +1,26 @@
 import type {Job} from './types.ts';
 
 const REMINDER_LIMIT = 8;
+const TITLE_LIMIT = 120;
+
+const ENTITIES: Readonly<Record<string, string>> = {
+	'&amp;': '&',
+	'&lt;': '<',
+	'&gt;': '>',
+	'&quot;': '"',
+	'&#39;': "'",
+	'&apos;': "'",
+	'&nbsp;': ' ',
+};
+
+// Models writing HTML all day escape their titles too ("Ember &amp; Oak"). A title is plain
+// text shown by textContent, so decode the common entities once at the boundary.
+export function plainTitle(raw: unknown, fallback: string): string {
+	const value = typeof raw === 'string' ? raw : '';
+	const decoded = value.replace(/&(?:amp|lt|gt|quot|#39|apos|nbsp);/g, entity => ENTITIES[entity] ?? entity);
+	const trimmed = decoded.replace(/\s+/g, ' ').trim().slice(0, TITLE_LIMIT);
+	return trimmed === '' ? fallback : trimmed;
+}
 
 function jobLine(job: Job): string {
 	const output = job.outputs[0]?.path;
