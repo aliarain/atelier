@@ -11,7 +11,9 @@ import type {
 } from '../types.ts';
 
 const DEFAULT_MODEL = 'fal-ai/flux/schnell';
-const MODEL_PATTERN = /^[a-z0-9-]+\/[a-z0-9./-]+$/;
+// owner/name segments; a dot only between non-empty parts, so "." and ".." never appear and the
+// model cannot climb out of /fal.run/<model> to another endpoint.
+const MODEL_PATTERN = /^[a-z0-9-]+(\/[a-z0-9-]+(\.[a-z0-9-]+)*)+$/;
 const IMAGE_SIZES = [
 	'square_hd',
 	'square',
@@ -119,6 +121,28 @@ export function falImageUrls(json: unknown): readonly string[] {
 	});
 }
 
+interface Signature {
+	readonly extension: string;
+	readonly matches: (bytes: Uint8Array) => boolean;
+}
+
+const startsWith = (bytes: Uint8Array, offset: number, expected: readonly number[]): boolean =>
+	expected.every((value, index) => bytes[offset + index] === value);
+
+const SIGNATURES: readonly Signature[] = [
+	{extension: 'png', matches: bytes => startsWith(bytes, 0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])},
+	{extension: 'jpg', matches: bytes => startsWith(bytes, 0, [0xff, 0xd8, 0xff])},
+	{
+		extension: 'webp',
+		matches: bytes => startsWith(bytes, 0, [0x52, 0x49, 0x46, 0x46]) && startsWith(bytes, 8, [0x57, 0x45, 0x42, 0x50]),
+	},
+];
+
+// The extension of the image these bytes really are, or undefined for anything else.
+export function sniffImageExtension(bytes: Uint8Array): string | undefined {
+	return SIGNATURES.find(signature => signature.matches(bytes))?.extension;
+}
+
 const EXTENSION_BY_CONTENT_TYPE: Readonly<Record<string, string>> = {
 	'image/png': 'png',
 	'image/jpeg': 'jpg',
@@ -172,6 +196,10 @@ async function send(
 	}
 }
 
+function isHttps(value: string): boolean {
+	return URL.canParse(value) && new URL(value).protocol === 'https:';
+}
+
 async function readOk(response: Response): Promise<Response> {
 	const failure = statusFailure(
 		response.status,
@@ -179,6 +207,60 @@ async function readOk(response: Response): Promise<Response> {
 	);
 	if (failure !== undefined) throw failure;
 	return response;
+}
+
+// The paid step. Everything after it is a failure of a run that was already billed.
+async function generate(input: FalImageInput, key: string, ctx: EngineRunContext): Promise<string> {
+	const request = falRequest(input, key);
+	const generated = await readOk(await send(ctx, request.url, request.init));
+	ctx.markBilled?.();
+	const imageUrl = falImageUrls(await generated.json().catch(() => undefined))[0];
+	if (imageUrl === undefined) {
+		throw engineFailure({
+			code: 'no_image',
+			message: 'fal.ai answered without an image. The prompt may have been filtered.',
+			retryable: false,
+		});
+	}
+	if (!isHttps(imageUrl)) {
+		throw engineFailure({
+			code: 'bad_response',
+			message: 'fal.ai answered with an image address that is not https, so it was not fetched.',
+			retryable: false,
+		});
+	}
+	ctx.markBilled?.({url: imageUrl});
+	return imageUrl;
+}
+
+async function download(imageUrl: string, ctx: EngineRunContext): Promise<readonly MediaOutput[]> {
+	if (!isHttps(imageUrl)) {
+		throw engineFailure({
+			code: 'bad_response',
+			message: 'The stored image address is not https, so it was not fetched.',
+			retryable: false,
+		});
+	}
+	const response = await readOk(await send(ctx, imageUrl, {method: 'GET'}));
+	if (imageExtension(response.headers.get('content-type')) === undefined) {
+		throw engineFailure({
+			code: 'bad_response',
+			message: `fal.ai returned an unsupported image type: ${response.headers.get('content-type') ?? 'none'}.`,
+			retryable: false,
+		});
+	}
+	const bytes = Buffer.from(await response.arrayBuffer());
+	const extension = sniffImageExtension(bytes);
+	if (extension === undefined) {
+		throw engineFailure({
+			code: 'bad_response',
+			message: 'fal.ai returned data that is not a PNG, JPEG or WebP image.',
+			retryable: false,
+		});
+	}
+	const path = join(ctx.outDir, `fal-image.${extension}`);
+	await writeFile(path, bytes);
+	return [{path, kind: 'image', bytes: bytes.length}];
 }
 
 export const falImageEngine: Engine<FalImageInput> = {
@@ -216,6 +298,10 @@ export const falImageEngine: Engine<FalImageInput> = {
 			? {ok: false, reason: 'Set FAL_KEY to use fal.ai models.'}
 			: {ok: true},
 	run: async ({input, ctx}): Promise<readonly MediaOutput[]> => {
+		if (ctx.resume !== undefined) {
+			ctx.markBilled?.(ctx.resume);
+			return download(ctx.resume.url, ctx);
+		}
 		const key = ctx.env.FAL_KEY;
 		if (key === undefined || key === '') {
 			throw engineFailure({
@@ -224,31 +310,6 @@ export const falImageEngine: Engine<FalImageInput> = {
 				retryable: false,
 			});
 		}
-
-		const request = falRequest(input, key);
-		const generated = await readOk(await send(ctx, request.url, request.init));
-		const imageUrl = falImageUrls(await generated.json().catch(() => undefined))[0];
-		if (imageUrl === undefined) {
-			throw engineFailure({
-				code: 'no_image',
-				message: 'fal.ai answered without an image. The prompt may have been filtered.',
-				retryable: false,
-			});
-		}
-
-		const download = await readOk(await send(ctx, imageUrl, {method: 'GET'}));
-		const extension = imageExtension(download.headers.get('content-type'));
-		if (extension === undefined) {
-			throw engineFailure({
-				code: 'bad_response',
-				message: `fal.ai returned an unsupported image type: ${download.headers.get('content-type') ?? 'none'}.`,
-				retryable: false,
-			});
-		}
-
-		const path = join(ctx.outDir, `fal-image.${extension}`);
-		const bytes = Buffer.from(await download.arrayBuffer());
-		await writeFile(path, bytes);
-		return [{path, kind: 'image', bytes: bytes.length}];
+		return download(await generate(input, key, ctx), ctx);
 	},
 };

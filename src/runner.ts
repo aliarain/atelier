@@ -2,8 +2,8 @@ import {readFileSync, statSync} from 'node:fs';
 import {mkdir, readFile, rm, stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {isEngineFailure, stderrTail} from './exec.ts';
-import {createJob, moveJob, newJobId, outputDir, saveJob} from './jobs.ts';
-import type {Engine, Env, Exec, Job, JobError, MediaOutput} from './types.ts';
+import {createJob, moveJob, newJobId, outputDir, PROCESS_STARTED_AT, saveJob} from './jobs.ts';
+import type {BilledResult, Engine, Env, Exec, Job, JobError, MediaOutput} from './types.ts';
 
 export interface RunJobParams {
 	readonly cwd: string;
@@ -16,6 +16,8 @@ export interface RunJobParams {
 	readonly fetch: typeof fetch;
 	readonly signal: AbortSignal;
 	readonly now: () => number;
+	// A billed result from an earlier uncertain run; the engine fetches it instead of paying again.
+	readonly resume?: BilledResult;
 	// Fires after every saved transition so a gallery or pane can repaint.
 	readonly onChange?: (job: Job) => void;
 }
@@ -29,6 +31,20 @@ function errorOf(error: unknown, aborted: boolean): JobError {
 	}
 	const message = error instanceof Error ? error.message : String(error);
 	return {code: 'engine_error', message: stderrTail(message), retryable: true};
+}
+
+// The provider took the billable request, so whatever stopped the run, the money may be spent.
+// A retry must not pay again blindly: with the result's address it only fetches.
+function billedError(cause: JobError, billed: BilledResult | undefined): JobError {
+	const next =
+		billed === undefined
+			? "Do not run it again without the person's say-so."
+			: 'Run atelier_create again with the same input to fetch the result without paying again.';
+	return {
+		code: 'billed_incomplete',
+		message: `The provider already billed this run, but it did not finish: ${cause.message} ${next}`,
+		retryable: false,
+	};
 }
 
 async function commit(params: RunJobParams, job: Job): Promise<Job> {
@@ -50,6 +66,7 @@ export async function runJob(params: RunJobParams): Promise<Job> {
 		input: params.input,
 		paid: engine.paid,
 		ownerPid: process.pid,
+		ownerStartedAt: PROCESS_STARTED_AT,
 		now: now(),
 	});
 	await commit(params, queued);
@@ -60,6 +77,8 @@ export async function runJob(params: RunJobParams): Promise<Job> {
 	if (!started.ok) return queued;
 	const running = await commit(params, started.job);
 
+	// Mutated by the engine's markBilled callback, so it lives in an object, not a narrowed let.
+	const billing: {billed: boolean; result: BilledResult | undefined} = {billed: false, result: undefined};
 	try {
 		const outputs = await engine.run({
 			input: params.input,
@@ -70,12 +89,26 @@ export async function runJob(params: RunJobParams): Promise<Job> {
 				exec: params.exec,
 				env: params.env,
 				fetch: params.fetch,
+				markBilled: result => {
+					billing.billed = true;
+					billing.result = result ?? billing.result;
+				},
+				...(params.resume === undefined ? {} : {resume: params.resume}),
 			},
 		});
 		const done = moveJob(running, {state: 'completed', outputs}, now());
 		return done.ok ? commit(params, done.job) : running;
 	} catch (error) {
 		const aborted = params.signal.aborted;
+		if (billing.billed) {
+			const patch = {
+				state: 'uncertain',
+				error: billedError(errorOf(error, aborted), billing.result),
+				...(billing.result === undefined ? {} : {billedResult: billing.result}),
+			} as const;
+			const uncertain = moveJob(running, patch, now());
+			return uncertain.ok ? commit(params, uncertain.job) : running;
+		}
 		const state = aborted ? 'cancelled' : 'failed';
 		const failed = moveJob(running, {state, error: errorOf(error, aborted)}, now());
 		return failed.ok ? commit(params, failed.job) : running;

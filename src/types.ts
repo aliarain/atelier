@@ -22,6 +22,12 @@ export interface JobError {
 	readonly retryable: boolean;
 }
 
+// What a paid provider already made for a run it billed, so a retry can fetch it without paying
+// again.
+export interface BilledResult {
+	readonly url: string;
+}
+
 export interface Job {
 	readonly id: string;
 	readonly sessionId: string;
@@ -31,6 +37,9 @@ export interface Job {
 	readonly state: JobState;
 	readonly paid: boolean;
 	readonly ownerPid: number;
+	// When the owning process started, so a recycled pid is not mistaken for the owner.
+	readonly ownerStartedAt?: number;
+	readonly billedResult?: BilledResult;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 	readonly outputs: readonly MediaOutput[];
@@ -50,6 +59,12 @@ export interface ExecResult {
 	readonly code: number;
 	readonly stdout: string;
 	readonly stderr: string;
+	// Set only when the run was stopped for taking longer than timeoutMs.
+	readonly timedOut?: boolean;
+	// The signal that ended the process, such as SIGTERM after a timeout or an abort.
+	readonly signal?: string;
+	// The system error name when the process could not start, such as ENOENT.
+	readonly errno?: string;
 }
 
 export type Exec = (params: ExecParams) => Promise<ExecResult>;
@@ -78,6 +93,11 @@ export interface EngineRunContext {
 	readonly exec: Exec;
 	readonly env: Env;
 	readonly fetch: typeof fetch;
+	// A paid engine calls this the moment the provider has accepted the billable request, with
+	// the result it can be fetched from once known. From then on any failure is `uncertain`.
+	readonly markBilled?: (result?: BilledResult) => void;
+	// Set when an earlier run was billed but never delivered: skip the paid request and fetch this.
+	readonly resume?: BilledResult;
 }
 
 export interface Engine<I = unknown> {

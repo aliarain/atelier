@@ -14,11 +14,15 @@ import {
 import {type ToolRowProps, toolRowCard} from './feed-cards.ts';
 import {
 	atelierDir,
+	createStartedAtReader,
+	isFinished,
+	isOwnerAlive,
 	isPidAlive,
 	loadJob,
 	loadJobSync,
 	loadJobs,
 	markPresented,
+	PROCESS_STARTED_AT,
 	saveJob,
 	settleOrphan,
 } from './jobs.ts';
@@ -184,8 +188,16 @@ export default function atelier(cmd: ModApi): void {
 
 	const settleOrphans = async (): Promise<void> => {
 		const jobs = await loadJobs(cmd.cwd);
+		const startedAtOf = createStartedAtReader();
 		for (const job of jobs) {
-			const settled = settleOrphan(job, {isAlive: isPidAlive, now: now()});
+			if (isFinished(job.state) || job.state === 'uncertain') continue;
+			const alive = await isOwnerAlive(job, {
+				isAlive: isPidAlive,
+				startedAtOf,
+				selfPid: process.pid,
+				selfStartedAt: PROCESS_STARTED_AT,
+			});
+			const settled = settleOrphan(job, {isAlive: () => alive, now: now()});
 			if (settled !== job) await saveJob(cmd.cwd, settled);
 		}
 	};
