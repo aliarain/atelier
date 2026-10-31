@@ -39,3 +39,17 @@ Render every scene with the `design` engine at the video's exact size. Use one s
 ## 5. Review, fix, present
 
 The review measures black or frozen frames, silence, loudness and peaks. Fix every `fail`. A `warn` about loudness or silence usually means the voiceover and scene timing drifted. Look at the middle-frame preview. Present the final video with `studio_present`, and include the storyboard as a short note in your reply.
+
+## Motion
+
+The `motion` engine renders an HTML page with CSS keyframes, the Web Animations API, SVG animation or `requestAnimationFrame` to an MP4. It plays the page on a virtual clock, one frame at a time, so the result is exact whatever the machine speed. Use it instead of stills plus camera moves when the picture itself must move: kinetic typography, animated titles, logo reveals, animated charts, lower thirds. Keep the `video` engine for photo or poster stills with a slow zoom or pan.
+
+Rules:
+
+- Build the animation with CSS keyframes or the Web Animations API on one timeline that ends before `duration_s`. Time starts at 0 when the page loads, so do not wait on real events or the network.
+- Put about 60% of the motion in the first and last 20% of each beat. Let things settle in between.
+- Ease out for entrances and ease in for exits.
+- Hold the final frame for 1 second so the last text can be read.
+- Keep text inside the safe area: away from the top 12% and bottom 18% on 9:16.
+- Size the clip to the target (`width` x `height`, 1080 x 1920 for reels) and choose `fps` 30 unless the person wants a filmic 24.
+- A motion clip cannot yet be one scene of a larger edit, because the `video` engine only takes stills. Make each motion piece complete on its own: opening, payoff, and closing hold. Add `voiceover` or `music` straight to the motion call when sound is needed.

@@ -105,7 +105,7 @@ async function isExecutable(path: string): Promise<boolean> {
 	}
 }
 
-async function findChrome(env: Env): Promise<string | undefined> {
+export async function findChrome(env: Env): Promise<string | undefined> {
 	for (const candidate of chromeCandidates(env)) {
 		if (await isExecutable(candidate)) return candidate;
 	}

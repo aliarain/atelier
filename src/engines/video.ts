@@ -249,7 +249,7 @@ function parseVideoInput(raw: unknown): Parsed<VideoInput> {
 }
 
 // Short enough to read in a filter graph, exact enough that 0.1 + 0.2 never prints as 0.30000000000000004.
-function num(value: number): string {
+export function num(value: number): string {
 	return String(Number(value.toFixed(4)));
 }
 
@@ -315,13 +315,30 @@ function videoChain(input: VideoInput): readonly string[] {
 }
 
 function audioFilters(input: VideoInput): readonly string[] {
-	const total = totalDurationS(input);
-	const first = input.scenes.length;
+	return mixAudioFilters({
+		voiceover: input.voiceover,
+		music: input.music,
+		musicVolume: input.musicVolume,
+		totalS: totalDurationS(input),
+		firstAudioInput: input.scenes.length,
+	});
+}
+
+// Voiceover and music become one loudness-normalised [aout]; empty when there is no audio.
+export function mixAudioFilters(params: {
+	readonly voiceover?: string;
+	readonly music?: string;
+	readonly musicVolume: number;
+	readonly totalS: number;
+	readonly firstAudioInput: number;
+}): readonly string[] {
+	const total = params.totalS;
+	const first = params.firstAudioInput;
 	const sources: {readonly path?: string; readonly tail: string}[] = [
-		{path: input.voiceover, tail: ''},
+		{path: params.voiceover, tail: ''},
 		{
-			path: input.music,
-			tail: `,volume=${num(input.musicVolume)},afade=t=out:st=${num(Math.max(total - MUSIC_FADE_S, 0))}:d=${num(Math.min(MUSIC_FADE_S, total))}`,
+			path: params.music,
+			tail: `,volume=${num(params.musicVolume)},afade=t=out:st=${num(Math.max(total - MUSIC_FADE_S, 0))}:d=${num(Math.min(MUSIC_FADE_S, total))}`,
 		},
 	];
 	const present = sources.filter(source => source.path !== undefined);
