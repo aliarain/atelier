@@ -1,7 +1,8 @@
-import type {Job} from './types.ts';
+import type {BilledResult, Job} from './types.ts';
 
 const REMINDER_LIMIT = 8;
 const TITLE_LIMIT = 120;
+const NOTE_LIMIT = 300;
 
 const ENTITIES: Readonly<Record<string, string>> = {
 	'&amp;': '&',
@@ -16,12 +17,78 @@ const ENTITIES: Readonly<Record<string, string>> = {
 // Models writing HTML all day escape their titles too ("Ember &amp; Oak"). A title is plain
 // text shown by textContent, so decode the common entities once at the boundary. Titles are
 // UI copy in the gallery, which never shows em or en dashes: a spaced dash becomes a colon.
-export function plainTitle(raw: unknown, fallback: string): string {
+function plainText(raw: unknown, limit: number): string {
 	const value = typeof raw === 'string' ? raw : '';
 	const decoded = value.replace(/&(?:amp|lt|gt|quot|#39|apos|nbsp);/g, entity => ENTITIES[entity] ?? entity);
 	const undashed = decoded.replace(/\s+[–—]\s+/g, ': ').replace(/[–—]/g, '-');
-	const trimmed = undashed.replace(/\s+/g, ' ').trim().slice(0, TITLE_LIMIT);
-	return trimmed === '' ? fallback : trimmed;
+	return undashed.replace(/\s+/g, ' ').trim().slice(0, limit);
+}
+
+export function plainTitle(raw: unknown, fallback: string): string {
+	const title = plainText(raw, TITLE_LIMIT);
+	return title === '' ? fallback : title;
+}
+
+// The note the model writes when it presents work reaches the person as a card line and a
+// toast, so it gets the same cleaning as a title, with room for a sentence or two.
+export function plainNote(raw: unknown): string {
+	return plainText(raw, NOTE_LIMIT);
+}
+
+// What the footer says while jobs render. The host names the mod, so the text does not.
+export function runningStatus(titles: readonly string[]): string | null {
+	return titles.length === 0 ? null : `Making ${titles.join(', ')}`;
+}
+
+// A video whose every scene holds a still frame is meant not to move; the review should not
+// call that frozen footage. The review accepts the flag on hosts that ship it.
+export function stillVideoFlag(job: Job): {readonly expectStill: true} | Record<string, never> {
+	if (job.engine !== 'video') return {};
+	const scenes = (job.input as {readonly scenes?: unknown} | null)?.scenes;
+	if (!Array.isArray(scenes) || scenes.length === 0) return {};
+	const allStill = scenes.every(scene => (scene as {readonly motion?: unknown} | null)?.motion === 'still');
+	return allStill ? {expectStill: true} : {};
+}
+
+export type PaidGate =
+	| {readonly kind: 'clear'}
+	| {
+			readonly kind: 'resume';
+			readonly job: Job;
+			readonly billedResult: BilledResult;
+	  }
+	| {readonly kind: 'blocked'; readonly jobs: readonly Job[]};
+
+// A paid engine with an uncertain job may already have billed it. The same input with a stored
+// result is a free re-download; anything else needs the person, however the run was approved.
+export function paidGate(jobs: readonly Job[], engineId: string, input: unknown): PaidGate {
+	const uncertain = jobs.filter(job => job.state === 'uncertain' && job.engine === engineId);
+	if (uncertain.length === 0) return {kind: 'clear'};
+	const wanted = JSON.stringify(input);
+	const resumable = uncertain.find(
+		job => typeof job.billedResult?.url === 'string' && JSON.stringify(job.input) === wanted,
+	);
+	if (resumable?.billedResult !== undefined) {
+		return {kind: 'resume', job: resumable, billedResult: resumable.billedResult};
+	}
+	return {kind: 'blocked', jobs: uncertain};
+}
+
+function modelOf(input: unknown): string | undefined {
+	if (typeof input !== 'object' || input === null) return undefined;
+	const model = (input as {readonly model?: unknown}).model;
+	return typeof model === 'string' && model !== '' ? model : undefined;
+}
+
+// The person is approving spend, so the prompt names the provider route, not just the title.
+export function paidConfirmMessage(params: {
+	readonly engineId: string;
+	readonly title: string;
+	readonly input: unknown;
+}): string {
+	const model = modelOf(params.input);
+	const route = model === undefined ? params.engineId : `${params.engineId}, model ${model}`;
+	return `"${params.title}" calls a paid provider (${route}) and may cost money.`;
 }
 
 function jobLine(job: Job): string {

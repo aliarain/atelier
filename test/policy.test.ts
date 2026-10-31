@@ -5,7 +5,12 @@ import {
 	atelierReminder,
 	FRESH_RUN,
 	midRunNudge,
+	paidConfirmMessage,
+	paidGate,
+	plainNote,
 	plainTitle,
+	runningStatus,
+	stillVideoFlag,
 	stopNudge,
 	trackTool,
 } from '../src/policy.ts';
@@ -88,4 +93,56 @@ test('the stop nudge asks once to present work made this run', () => {
 	assert.match(first.reason ?? '', /atelier_present/);
 	assert.equal(stopNudge(first.progress).reason, undefined);
 	assert.equal(stopNudge(FRESH_RUN).reason, undefined);
+});
+
+test('a presented note is decoded, undashed and cut at 300 characters', () => {
+	assert.equal(plainNote('Ember &amp; Oak \u2014 final cut'), 'Ember & Oak: final cut');
+	assert.equal(plainNote('a\u2013b'), 'a-b');
+	assert.equal(plainNote('x'.repeat(400)).length, 300);
+	assert.equal(plainNote(undefined), '');
+});
+
+test('the footer says Making followed by the titles, or nothing', () => {
+	assert.equal(runningStatus([]), null);
+	assert.equal(runningStatus(['Night Bloom']), 'Making Night Bloom');
+	assert.equal(runningStatus(['A', 'B']), 'Making A, B');
+});
+
+const uncertain = (overrides: Partial<Job>): Job => job({state: 'uncertain', paid: true, engine: 'fal-image', ...overrides});
+
+test('paidGate is clear with no uncertain job for the engine', () => {
+	assert.deepEqual(paidGate([], 'fal-image', {}), {kind: 'clear'});
+	assert.deepEqual(paidGate([uncertain({engine: 'other'}), job({state: 'completed'})], 'fal-image', {}), {kind: 'clear'});
+});
+
+test('paidGate resumes the same input that has a stored result and blocks everything else', () => {
+	const stored = uncertain({id: 'u1', input: {prompt: 'fox'}, billedResult: {url: 'https://cdn.example/a.png'}});
+	assert.deepEqual(paidGate([stored], 'fal-image', {prompt: 'fox'}), {
+		kind: 'resume',
+		job: stored,
+		billedResult: {url: 'https://cdn.example/a.png'},
+	});
+	assert.deepEqual(paidGate([stored], 'fal-image', {prompt: 'cat'}), {kind: 'blocked', jobs: [stored]});
+	const noResult = uncertain({id: 'u2', input: {prompt: 'fox'}});
+	assert.deepEqual(paidGate([noResult], 'fal-image', {prompt: 'fox'}), {kind: 'blocked', jobs: [noResult]});
+});
+
+test('the paid confirm text names the engine and the model id', () => {
+	assert.equal(
+		paidConfirmMessage({engineId: 'fal-image', title: 'Fox', input: {prompt: 'x', model: 'fal-ai/flux/schnell'}}),
+		'"Fox" calls a paid provider (fal-image, model fal-ai/flux/schnell) and may cost money.',
+	);
+	assert.equal(
+		paidConfirmMessage({engineId: 'tts', title: 'Hi', input: {}}),
+		'"Hi" calls a paid provider (tts) and may cost money.',
+	);
+});
+
+test('only a video of nothing but still scenes expects stillness', () => {
+	const still = {scenes: [{motion: 'still'}, {motion: 'still'}]};
+	assert.deepEqual(stillVideoFlag(job({engine: 'video', input: still})), {expectStill: true});
+	assert.deepEqual(stillVideoFlag(job({engine: 'video', input: {scenes: [{motion: 'still'}, {motion: 'zoom_in'}]}})), {});
+	assert.deepEqual(stillVideoFlag(job({engine: 'video', input: {scenes: []}})), {});
+	assert.deepEqual(stillVideoFlag(job({engine: 'motion', input: still})), {});
+	assert.deepEqual(stillVideoFlag(job({engine: 'video', input: null})), {});
 });

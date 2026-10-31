@@ -12,8 +12,8 @@ import {
 	startGallery,
 } from './gallery.ts';
 import {type ToolRowProps, toolRowCard} from './feed-cards.ts';
+import {readsRunningJob} from './guard.ts';
 import {
-	atelierDir,
 	createStartedAtReader,
 	isFinished,
 	isOwnerAlive,
@@ -22,6 +22,7 @@ import {
 	loadJobSync,
 	loadJobs,
 	markPresented,
+	moveJob,
 	PROCESS_STARTED_AT,
 	saveJob,
 	settleOrphan,
@@ -30,15 +31,21 @@ import {
 	atelierReminder,
 	FRESH_RUN,
 	midRunNudge,
+	paidConfirmMessage,
+	type PaidGate,
+	paidGate,
+	plainNote,
 	plainTitle,
 	type RunProgress,
+	runningStatus,
+	stillVideoFlag,
 	stopNudge,
 	trackTool,
 } from './policy.ts';
 import {type ElementCapabilities, paneNodes, supportsStatus} from './pane.ts';
 import {reviewMedia} from './review.ts';
 import {previewOf, readPreviewDataUrl, runJob} from './runner.ts';
-import type {Engine, Job, Review} from './types.ts';
+import type {Engine, Job, JobError, Review} from './types.ts';
 
 type ToolContent =
 	| {readonly type: 'text'; readonly text: string}
@@ -61,11 +68,12 @@ You can make images, voiceovers and videos with the atelier tools. Work like a d
 1. Decide the format, size and story before making anything.
 2. Make with atelier_create. Each call returns a measured review and, for images and video, a preview you can see. Fix any "fail" check before showing work.
 3. Show finished work with atelier_present and a one-line note. The person watches a live gallery.
-The design engine renders your HTML and CSS in Chrome at the exact pixel size, so write real layouts with real copy. The motion engine renders animated HTML and CSS (kinetic type, animated titles, logo reveals) frame by frame into a video. The video engine edits stills with camera moves, crossfades, voiceover and music, and cannot draw text: put words in rendered stills. Never re-run an "uncertain" job without asking, it may already be paid for.
+The design engine renders your HTML and CSS in Chrome at the exact pixel size, so write real layouts with real copy. The motion engine renders animated HTML and CSS (kinetic type, animated titles, logo reveals) frame by frame into a video. The video engine edits stills with camera moves, crossfades, voiceover and music, and cannot draw text: put words in rendered stills. Never re-run an "uncertain" job without asking, it may already be paid for: atelier_create refuses a paid engine that has one unless the person confirms a re-run (confirm_rerun).
 Load the atelier-* skills for craft rules before a first design or video.
 </atelier>`;
 
 const GALLERY_VIEW = 'gallery';
+const CLEAR: PaidGate = {kind: 'clear'};
 
 interface ViewUi {
 	readonly view?: (params: {
@@ -80,6 +88,10 @@ interface ViewUi {
 		render: (props: ToolRowProps) => readonly unknown[] | undefined,
 	) => unknown;
 }
+
+// The mod's own state survives a hot reload, so a running gallery and its token do too.
+const GALLERY_STATE = 'gallery';
+const TOKEN_STATE = 'gallery-token';
 
 const text = (value: string): ToolContent => ({type: 'text', text: value});
 const json = (value: unknown): ToolContent => text(JSON.stringify(value, null, 2));
@@ -136,9 +148,11 @@ function stringArray(value: unknown): readonly string[] {
 export default function atelier(cmd: ModApi): void {
 	let sessionId = 'local';
 	let progress: RunProgress = FRESH_RUN;
-	let gallery: GalleryHandle | undefined;
+	let galleryStart: Promise<GalleryHandle> | undefined;
+	let galleryView: {dispose(): void} | undefined;
 	const running = new Map<string, string>();
-	const token = randomBytes(16).toString('hex');
+	const token = cmd.state.get<string>(TOKEN_STATE) ?? randomBytes(16).toString('hex');
+	cmd.state.set(TOKEN_STATE, token);
 	const now = (): number => Date.now();
 	const deps = {exec: execFileExec, env: process.env, fetch: globalThis.fetch};
 
@@ -146,6 +160,12 @@ export default function atelier(cmd: ModApi): void {
 	const viewUi = cmd.ui as ModApi['ui'] & ViewUi & ElementCapabilities;
 
 	const onGalleryAction: GalleryActionHandler = async ({action, job}): Promise<GalleryActionResult> => {
+		if (action === 'variant' && (job.state === 'failed' || job.state === 'cancelled')) {
+			cmd.sendUserMessage(
+				`Try atelier job ${job.id} ("${job.title}") again with the same brief. Its input is in atelier_jobs. Fix whatever stopped it.`,
+			);
+			return {ok: true, message: 'Asked to try again.'};
+		}
 		const first = job.outputs[0];
 		if (job.state !== 'completed' || first === undefined) {
 			return {ok: false, message: 'Nothing to work with yet.'};
@@ -158,7 +178,7 @@ export default function atelier(cmd: ModApi): void {
 		}
 		if (action === 'present') {
 			await saveJob(cmd.cwd, markPresented(job, now()));
-			cmd.ui.toast(`Atelier: ${job.title} marked as shown`, {level: 'success'});
+			cmd.ui.toast(`${job.title} marked as shown`, {level: 'success'});
 			return {ok: true, message: 'Marked as shown.'};
 		}
 		cmd.sendUserMessage(
@@ -167,22 +187,55 @@ export default function atelier(cmd: ModApi): void {
 		return {ok: true, message: 'Asked for a variant.'};
 	};
 
-	const ensureGallery = async (): Promise<GalleryHandle> => {
-		if (gallery) return gallery;
-		gallery = await startGallery({cwd: cmd.cwd, token, onAction: onGalleryAction});
-		viewUi.view?.({id: GALLERY_VIEW, title: 'Atelier', url: gallery.url});
-		return gallery;
+	const registerView = (handle: GalleryHandle): void => {
+		galleryView?.dispose();
+		galleryView = viewUi.view?.({id: GALLERY_VIEW, title: 'Atelier', url: handle.url});
+	};
+
+	// Two callers racing to open the gallery share one start, so only one server ever listens.
+	const ensureGallery = (): Promise<GalleryHandle> => {
+		galleryStart ??= startGallery({cwd: cmd.cwd, token, onAction: onGalleryAction}).then(
+			handle => {
+				cmd.state.set(GALLERY_STATE, handle);
+				registerView(handle);
+				return handle;
+			},
+			(error: unknown) => {
+				galleryStart = undefined;
+				throw error;
+			},
+		);
+		return galleryStart;
 	};
 
 	const revealGallery = async (): Promise<GalleryHandle> => {
 		const handle = await ensureGallery();
+		if (galleryView === undefined) registerView(handle);
 		viewUi.openView?.(GALLERY_VIEW);
 		return handle;
 	};
 
+	// A hot reload ends this code and starts new code in the same session. The server and its
+	// token live in cmd.state, so the new code adopts the running gallery.
+	const adoptGallery = (): void => {
+		const kept = cmd.state.get<GalleryHandle>(GALLERY_STATE);
+		if (kept === undefined || galleryStart !== undefined) return;
+		galleryStart = Promise.resolve(kept);
+		registerView(kept);
+	};
+
+	const closeGallery = async (): Promise<void> => {
+		galleryView?.dispose();
+		galleryView = undefined;
+		const start = galleryStart;
+		galleryStart = undefined;
+		cmd.state.set(GALLERY_STATE, undefined);
+		const handle = await start?.catch(() => undefined);
+		await handle?.close();
+	};
+
 	const refreshStatus = (): void => {
-		const titles = [...running.values()];
-		cmd.ui.setStatus(titles.length === 0 ? null : `atelier: making${titles.join(', ')}`);
+		cmd.ui.setStatus(runningStatus([...running.values()]));
 		cmd.ui.refreshWidgets();
 	};
 
@@ -202,6 +255,43 @@ export default function atelier(cmd: ModApi): void {
 		}
 	};
 
+	const cancelUncertain = async (jobs: readonly Job[], error: JobError): Promise<void> => {
+		for (const job of jobs) {
+			const moved = moveJob(job, {state: 'cancelled', error}, now());
+			if (moved.ok) await saveJob(cmd.cwd, moved.job);
+		}
+	};
+
+	// Paid spend and an uncertain earlier run are the person's call. Returns why the run must not
+	// start, or undefined when it may.
+	const paidRefusal = async (params: {
+		readonly engine: Engine;
+		readonly title: string;
+		readonly input: unknown;
+		readonly gate: PaidGate;
+		readonly rerun: boolean;
+	}): Promise<string | undefined> => {
+		const {engine, title, input, gate, rerun} = params;
+		if (!engine.paid || gate.kind === 'resume') return undefined;
+		const message = paidConfirmMessage({engineId: engine.id, title, input});
+		if (gate.kind === 'blocked') {
+			const ids = gate.jobs.map(job => job.id).join(', ');
+			if (!rerun) {
+				return `Nothing was run. ${engine.id} job ${ids} is uncertain and may already be billed. Ask the person first. If they want a new paid run, call atelier_create again with confirm_rerun: true and they will be asked to confirm. This applies even with --atelier-allow-paid.`;
+			}
+			const approved = await cmd.ui.confirm({
+				title: `Run ${engine.id} again?`,
+				message: `${message} An earlier run (${ids}) is uncertain and may already be billed.`,
+			});
+			return approved
+				? undefined
+				: `Nothing was run. The person did not confirm the re-run of ${engine.id}. Headless runs cannot confirm, so confirm_rerun cannot be used there.`;
+		}
+		if (cmd.getFlag('atelier-allow-paid') === true) return undefined;
+		const approved = await cmd.ui.confirm({title: `Run paid engine ${engine.id}?`, message});
+		return approved ? undefined : 'The person did not approve this paid run. Offer a free engine or ask them.';
+	};
+
 	// The manifest's `commandcode.skills` is not honored by every host (the desktop app skipped it),
 	// so the craft skills are also registered from code, which every host collects at factory time.
 	cmd.addSkillsPath(join(dirname(fileURLToPath(import.meta.url)), '..', 'skills'));
@@ -213,13 +303,18 @@ export default function atelier(cmd: ModApi): void {
 	});
 
 	cmd.hooks({
-		onSessionStart: async ({sessionId: id}) => {
+		onSessionStart: async ({sessionId: id, source}) => {
 			sessionId = id ?? sessionId;
+			if (source === 'reload') adoptGallery();
 			await settleOrphans();
 		},
-		onSessionEnd: async () => {
-			await gallery?.close();
-			gallery = undefined;
+		onSessionEnd: async params => {
+			if (params?.reason === 'reload') {
+				galleryView?.dispose();
+				galleryView = undefined;
+				return;
+			}
+			await closeGallery();
 		},
 		appendSystemPrompt: () => ATELIER_PROMPT,
 		transformContext: async ({messages}) => {
@@ -229,9 +324,7 @@ export default function atelier(cmd: ModApi): void {
 		// Reading an image atelier is still writing returns half a file.
 		beforeToolCall: async ({toolName, input}) => {
 			if (toolName !== 'read_file' || running.size === 0) return undefined;
-			const path = typeof input.file_path === 'string' ? input.file_path : '';
-			if (!path.startsWith(atelierDir(cmd.cwd))) return undefined;
-			if (![...running.keys()].some(id => path.includes(id))) return undefined;
+			if (!readsRunningJob({input, cwd: cmd.cwd, runningIds: [...running.keys()]})) return undefined;
 			return {
 				block: true,
 				additionalContext: 'That atelier job is still rendering. atelier_create returns its outputs when it finishes.',
@@ -288,6 +381,10 @@ export default function atelier(cmd: ModApi): void {
 					engine: {type: 'string', enum: ENGINES.map(engine => engine.id)},
 					title: {type: 'string', description: 'Short human title shown in the gallery, e.g. "Launch poster v2".'},
 					input: {type: 'object', description: 'Engine input, exactly as its input_schema describes.'},
+					confirm_rerun: {
+						type: 'boolean',
+						description: 'Only after the person agreed: run a paid engine again although an earlier run of it is uncertain and may already be billed. They are asked to confirm.',
+					},
 				},
 				required: ['engine', 'title', 'input'],
 			},
@@ -302,17 +399,17 @@ export default function atelier(cmd: ModApi): void {
 			const available = await engine.available(deps);
 			if (!available.ok) return {ok: false, error: `${engine.id} is not available: ${available.reason}`};
 
-			if (engine.paid && cmd.getFlag('atelier-allow-paid') !== true) {
-				const approved = await cmd.ui.confirm({
-					title: `Run paid engine ${engine.id}?`,
-					message: `"${String(input.title)}" calls a paid provider and may cost money.`,
-				});
-				if (!approved) return {ok: false, error: 'The person did not approve this paid run. Offer a free engine or ask them.'};
+			const title = plainTitle(input.title, engine.id);
+			const gate = engine.paid ? paidGate(await loadJobs(cmd.cwd), engine.id, parsed.value) : CLEAR;
+			const refusal = await paidRefusal({engine, title, input: parsed.value, gate, rerun: input.confirm_rerun === true});
+			if (refusal !== undefined) return {ok: false, error: refusal};
+			if (gate.kind === 'blocked') {
+				await cancelUncertain(gate.jobs, {code: 'rerun_confirmed', message: 'The person chose to run it again.', retryable: false});
 			}
 
-			const title = plainTitle(input.title, engine.id);
 			const controller = new AbortController();
 			signal?.addEventListener('abort', () => controller.abort(), {once: true});
+			const started = new Set<string>();
 			const job = await runJob({
 				cwd: cmd.cwd,
 				sessionId,
@@ -322,18 +419,29 @@ export default function atelier(cmd: ModApi): void {
 				...deps,
 				signal: controller.signal,
 				now,
+				...(gate.kind === 'resume' ? {resume: gate.billedResult} : {}),
 				onChange: changed => {
-					if (changed.state === 'running') running.set(changed.id, changed.title);
+					if (changed.state === 'running') {
+						started.add(changed.id);
+						running.set(changed.id, changed.title);
+					}
 					if (changed.state !== 'running') running.delete(changed.id);
 					refreshStatus();
 				},
+			}).finally(() => {
+				// A save that throws must not leave the footer saying a dead job is still rendering.
+				for (const id of started) running.delete(id);
+				refreshStatus();
 			});
+			if (gate.kind === 'resume' && job.state === 'completed') {
+				await cancelUncertain([gate.job], {code: 'recovered', message: `Fetched by job ${job.id} without paying again.`, retryable: false});
+			}
 			if (job.state !== 'completed') {
 				return {ok: false, error: `Job ${job.id} ${job.state}: ${job.error?.message ?? 'no detail'}`};
 			}
 
 			const reviews = await Promise.all(
-				job.outputs.map(output => reviewMedia({path: output.path, exec: execFileExec}).catch(() => undefined)),
+				job.outputs.map(output => reviewMedia({path: output.path, exec: execFileExec, ...stillVideoFlag(job)}).catch(() => undefined)),
 			);
 			const layouts = await Promise.all(job.outputs.map(output => layoutReport(output.path)));
 			const first = job.outputs[0];
@@ -418,7 +526,8 @@ export default function atelier(cmd: ModApi): void {
 			},
 		},
 		run: async ({input}): Promise<ToolOutcome> => {
-			const ids = stringArray(input.job_ids);
+			const ids = [...new Set(stringArray(input.job_ids))];
+			if (ids.length === 0) return {ok: false, error: 'job_ids must list at least one job id from atelier_create.'};
 			const jobs = await Promise.all(ids.map(id => loadJob(cmd.cwd, id)));
 			const missing = ids.filter((_, index) => jobs[index] === undefined);
 			if (missing.length > 0) return {ok: false, error: `Unknown job ids: ${missing.join(', ')}`};
@@ -429,8 +538,8 @@ export default function atelier(cmd: ModApi): void {
 			const done = jobs.filter((job): job is Job => job !== undefined).map(job => markPresented(job, now()));
 			await Promise.all(done.map(job => saveJob(cmd.cwd, job)));
 			const handle = await revealGallery();
-			const note = String(input.note ?? '').slice(0, 300);
-			cmd.ui.toast(`Atelier: ${note}`, {level: 'success'});
+			const note = plainNote(input.note);
+			cmd.ui.toast(note === '' ? `Shown: ${done.map(job => job.title).join(', ')}` : note, {level: 'success'});
 			return {
 				ok: true,
 				content: [
@@ -478,9 +587,9 @@ export default function atelier(cmd: ModApi): void {
 		name: 'atelier',
 		description: 'Open the Atelier pane and its live gallery',
 		handler: async () => {
-			await revealGallery();
+			const handle = await revealGallery();
 			cmd.ui.openPane('atelier');
-			return {message: `Atelier gallery: ${gallery?.url ?? 'starting'}`};
+			return {message: `Atelier gallery: ${handle.url}`};
 		},
 	});
 }
