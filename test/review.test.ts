@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {after, test} from 'node:test';
+import {after, before, test} from 'node:test';
 import {execFileExec} from '../src/exec.ts';
 import {
 	analysisArgs,
@@ -330,20 +330,24 @@ test('reviewMedia rejects a corrupt file', async () => {
 	);
 });
 
-await ffmpeg([
-	...['-f', 'lavfi', '-i', 'color=c=0x141414:s=540x960:d=3:r=24'],
-	...['-vf', 'drawbox=x=40:y=400:w=200:h=30:c=white:t=fill'],
-	...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', file('dark-slide.mp4')],
-]);
-await ffmpeg([
-	...['-f', 'lavfi', '-i', 'color=c=black:s=540x960:d=3:r=24'],
-	...['-vf', 'drawbox=x=250:y=450:w=12:h=12:c=white:t=fill'],
-	...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', file('black-logo.mp4')],
-]);
-await ffmpeg([
-	...['-f', 'lavfi', '-i', 'color=c=black:s=540x960:d=3:r=24'],
-	...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', file('all-black.mp4')],
-]);
+// A hook, not top-level awaits: tests registered earlier in this file can finish and run the
+// `after` cleanup while a top-level fixture is still being written into the temp dir.
+before(async () => {
+	await ffmpeg([
+		...['-f', 'lavfi', '-i', 'color=c=0x141414:s=540x960:d=3:r=24'],
+		...['-vf', 'drawbox=x=40:y=400:w=200:h=30:c=white:t=fill'],
+		...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', file('dark-slide.mp4')],
+	]);
+	await ffmpeg([
+		...['-f', 'lavfi', '-i', 'color=c=black:s=540x960:d=3:r=24'],
+		...['-vf', 'drawbox=x=250:y=450:w=12:h=12:c=white:t=fill'],
+		...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', file('black-logo.mp4')],
+	]);
+	await ffmpeg([
+		...['-f', 'lavfi', '-i', 'color=c=black:s=540x960:d=3:r=24'],
+		...['-c:v', 'libx264', '-pix_fmt', 'yuv420p', file('all-black.mp4')],
+	]);
+});
 
 test('reviewMedia passes a #141414 slide with a white headline', async () => {
 	const review = await reviewMedia({path: file('dark-slide.mp4'), exec: execFileExec});

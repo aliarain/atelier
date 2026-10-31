@@ -1,14 +1,28 @@
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
+import {existsSync} from 'node:fs';
+import {rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {test} from 'node:test';
 import {environmentFailure, execFileExec} from '../src/exec.ts';
 
-// A child that ignores SIGTERM, the way ffmpeg does while stuck in a decoder.
-function stubborn(marker: string): readonly string[] {
+// A child that ignores SIGTERM, the way ffmpeg does while stuck in a decoder. With `readyFile`
+// it writes that file once the handler is installed, so a test can abort only after that point.
+function stubborn(marker: string, readyFile?: string): readonly string[] {
+	const ready = readyFile ? `require('node:fs').writeFileSync(${JSON.stringify(readyFile)}, '1');` : '';
 	return [
 		'-e',
-		`process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); // ${marker}`,
+		`process.on('SIGTERM', () => {}); ${ready} setInterval(() => {}, 1000); // ${marker}`,
 	];
+}
+
+async function waitForFile(path: string, timeoutMs = 10_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!existsSync(path)) {
+		if (Date.now() > deadline) throw new Error(`${path} never appeared`);
+		await new Promise(resolve => setTimeout(resolve, 20));
+	}
 }
 
 async function stillRunning(marker: string): Promise<boolean> {
@@ -56,15 +70,21 @@ test('execFileExec escalates to SIGKILL and resolves only after a SIGTERM-proof 
 
 test('execFileExec on abort resolves after the child exited, not when the signal fired', async () => {
 	const marker = `atelier-abort-${randomUUID()}`;
+	const readyFile = join(tmpdir(), `${marker}.ready`);
 	const controller = new AbortController();
-	setTimeout(() => controller.abort(), 200);
-	const started = Date.now();
-	const result = await execFileExec({
+	const running = execFileExec({
 		command: process.execPath,
-		args: stubborn(marker),
+		args: stubborn(marker, readyFile),
 		signal: controller.signal,
 	});
+	// Under load node can take longer to boot than a fixed delay, and an abort that lands
+	// before the SIGTERM handler exists ends the child with SIGTERM instead.
+	await waitForFile(readyFile);
+	const started = Date.now();
+	controller.abort();
+	const result = await running;
 	const elapsed = Date.now() - started;
+	await rm(readyFile, {force: true});
 	assert.equal(result.signal, 'SIGKILL');
 	assert.equal(result.timedOut, undefined);
 	assert.ok(elapsed >= 1500 && elapsed < 4000, `took ${elapsed}ms`);
