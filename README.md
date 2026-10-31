@@ -1,0 +1,58 @@
+# Studio
+
+A Command Code mod that turns the agent into a creative studio. Describe what you want, and it designs images, records voiceovers and cuts videos on your machine, checks each result with real measurements, and shows finished work in a live gallery.
+
+## What it can make
+
+| Engine | Makes | Runs on | Cost |
+|---|---|---|---|
+| `design` | Posters, social posts, slides, thumbnails, video stills (PNG) | Headless Chrome renders the agent's HTML and CSS at exact pixels | Free |
+| `voice` | Voiceovers (M4A) | macOS `say` voices, encoded with ffmpeg | Free |
+| `video` | Reels and videos (MP4) from stills, motion, crossfades, voiceover and music | ffmpeg | Free |
+| `fal-image` | AI images | fal.ai (needs `FAL_KEY`) | Paid, asks first |
+
+Every output gets a measured review: black or frozen frames, silences, loudness, true peak, image size and blank renders. Images and video also come back with a small preview the agent can look at.
+
+## Requirements
+
+- macOS with Google Chrome (or Edge or Chromium, or set `STUDIO_CHROME`)
+- ffmpeg on `PATH`
+
+## Try it
+
+Load it for one run:
+
+```bash
+cmd --mod ~/Documents/Projects/voyager-rea/studio
+```
+
+Load it in one project: add it to that project's `.commandcode/settings.json` and approve "Run mods" when asked.
+
+```json
+{"mods": {"paths": ["/Users/aliarain/Documents/Projects/voyager-rea/studio"]}}
+```
+
+Then ask for something: "Make a square Instagram post for my bakery's spring menu", or "Make a 15 second vertical reel with a voiceover about our launch".
+
+## Tools the agent gets
+
+| Tool | Does |
+|---|---|
+| `studio_engines` | Lists engines, whether each works here, and their input schemas |
+| `studio_create` | Runs one job and waits; returns outputs, review and preview |
+| `studio_review` | Measures any image, video or audio file |
+| `studio_jobs` | Lists jobs for this chat or the whole project |
+| `studio_present` | Marks finished work as delivered and opens the gallery |
+
+`/studio` opens the studio pane and the gallery. In the desktop app the gallery opens inside the workbench as a mod view; elsewhere it opens in your browser.
+
+## Where things go
+
+Jobs and outputs live in the project under `.studio/` (`jobs/<id>.json`, `out/<id>/`). A paid job interrupted mid-run becomes `uncertain` and is never re-run without asking.
+
+## Develop
+
+```bash
+pnpm test        # 130 tests, real Chrome, say and ffmpeg runs included
+pnpm typecheck
+```
