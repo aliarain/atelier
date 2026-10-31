@@ -41,6 +41,8 @@ interface StackNode {
 	readonly type: 'stack';
 	readonly direction: 'row' | 'column';
 	readonly align?: 'start' | 'center';
+	// Pixels between children (the desktop draws it as CSS gap).
+	readonly gap?: number;
 	readonly children: readonly FeedNode[];
 }
 
@@ -71,8 +73,25 @@ const CHIP_LIMIT = 3;
 const CHIP_CHARS = 40;
 const ERROR_CHARS = 140;
 const PORTRAIT_THUMB = {width: 64, height: 80};
+const SQUARE_THUMB = {width: 80, height: 80};
 const LANDSCAPE_THUMB = {width: 112, height: 80};
-const PIECE_IMAGE = {width: 180, height: 225};
+const PORTRAIT_PIECE = {width: 180, height: 225};
+const SQUARE_PIECE = {width: 200, height: 200};
+const LANDSCAPE_PIECE = {width: 256, height: 144};
+const CARD_GAP = 12;
+const TEXT_GAP = 3;
+const PIECE_GAP = 10;
+
+type Box = {readonly width: number; readonly height: number};
+
+// A box that matches the media's shape, so nothing is cropped or letterboxed for no reason.
+function boxFor(size: Size | undefined, boxes: {readonly portrait: Box; readonly square: Box; readonly landscape: Box}): Box {
+	if (size === undefined) return boxes.square;
+	const ratio = size.height / size.width;
+	if (ratio > 1.1) return boxes.portrait;
+	if (ratio < 0.9) return boxes.landscape;
+	return boxes.square;
+}
 
 // What the layout check measured about the page, named for what it found.
 const LAYOUT_LABELS: Readonly<Record<string, string>> = {
@@ -296,24 +315,28 @@ function successCard(params: {
 	];
 	if (!hasElements(capabilities, ['image', 'stack'])) return body;
 
+	// Text in a column that takes the free width, the button after it on the right edge.
+	const [button, ...rest] = [body[body.length - 1] as FeedNode, ...body.slice(0, -1)];
+	const column: FeedNode = {type: 'stack', direction: 'column', gap: TEXT_GAP, children: rest};
 	const src = jobId === undefined ? undefined : deps.readPreview(jobId);
-	const column: FeedNode = {type: 'stack', direction: 'column', children: body};
-	if (src === undefined) return [column];
-	const box = size !== undefined && size.height > size.width ? PORTRAIT_THUMB : LANDSCAPE_THUMB;
+	if (src === undefined) {
+		return [{type: 'stack', direction: 'row', align: 'center', gap: CARD_GAP, children: [column, button]}];
+	}
 	const image: FeedNode = {
 		type: 'image',
 		src,
 		alt: title,
-		...box,
+		...boxFor(size, {portrait: PORTRAIT_THUMB, square: SQUARE_THUMB, landscape: LANDSCAPE_THUMB}),
 		fit: 'cover',
 		...(output?.kind === 'video' ? {badge: 'play' as const} : {}),
 	};
-	return [{type: 'stack', direction: 'row', align: 'start', children: [image, column]}];
+	return [{type: 'stack', direction: 'row', align: 'center', gap: CARD_GAP, children: [image, column, button]}];
 }
 
 interface Piece {
 	readonly title: string;
 	readonly size: string | undefined;
+	readonly box: Box;
 	readonly src: string | undefined;
 }
 
@@ -322,6 +345,7 @@ function pieceOf(jobId: string, job: Job, deps: FeedCardDeps): Piece {
 	return {
 		title: plainTitle(job.title, job.engine),
 		size: size ? sizeLabel(size) : undefined,
+		box: boxFor(size, {portrait: PORTRAIT_PIECE, square: SQUARE_PIECE, landscape: LANDSCAPE_PIECE}),
 		src: deps.readPreview(jobId),
 	};
 }
@@ -361,17 +385,19 @@ function deliveredCard(
 	const columns: readonly FeedNode[] = pieces.map(piece => ({
 		type: 'stack',
 		direction: 'column',
+		gap: 6,
 		children: [
 			...(piece.src === undefined
 				? []
-				: [{type: 'image', src: piece.src, alt: piece.title, ...PIECE_IMAGE, fit: 'contain'} satisfies FeedNode]),
+				: [{type: 'image', src: piece.src, alt: piece.title, ...piece.box, fit: 'cover'} satisfies FeedNode]),
 			{
 				type: 'row',
 				children: [{type: 'text', text: piece.title}, ...(piece.size ? [dim(piece.size)] : [])],
 			},
 		],
 	}));
-	return [{type: 'stack', direction: 'column', children: [...intro, {type: 'stack', direction: 'row', align: 'start', children: columns}, ...more]}];
+	const gallery: FeedNode = {type: 'stack', direction: 'row', align: 'start', gap: PIECE_GAP, children: columns};
+	return [{type: 'stack', direction: 'column', gap: 8, children: [...intro, gallery, ...more]}];
 }
 
 // undefined keeps the host's built-in row. The host calls this synchronously on every repaint,

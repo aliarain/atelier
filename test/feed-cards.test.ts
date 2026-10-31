@@ -92,12 +92,14 @@ test('a finished create with an unsafe-area warning shows a portrait thumbnail a
 		{
 			type: 'stack',
 			direction: 'row',
-			align: 'start',
+			align: 'center',
+			gap: 12,
 			children: [
 				{type: 'image', src: SRC, alt: 'Night Bloom story v2', width: 64, height: 80, fit: 'cover'},
 				{
 					type: 'stack',
 					direction: 'column',
+					gap: 3,
 					children: [
 						{type: 'status', state: 'done', text: 'Night Bloom story v2'},
 						{type: 'text', text: 'design · 1080 × 1920 · 4s', dim: true},
@@ -108,9 +110,9 @@ test('a finished create with an unsafe-area warning shows a portrait thumbnail a
 								{type: 'text', text: 'Text in unsafe area', color: 'yellow'},
 							],
 						},
-						{type: 'button', label: 'Open in gallery', onPress: openGallery},
 					],
 				},
+				{type: 'button', label: 'Open in gallery', onPress: openGallery},
 			],
 		},
 	]);
@@ -143,13 +145,14 @@ test('a clean create says all checks passed', () => {
 	assert.deepEqual(row && 'children' in row ? row.children[1] : undefined, {
 		type: 'stack',
 		direction: 'column',
+		gap: 3,
 		children: [
 			{type: 'status', state: 'done', text: 'Night Bloom story v2'},
 			{type: 'text', text: 'design · 1080 × 1920', dim: true},
 			{type: 'row', children: [{type: 'text', text: 'All checks passed', color: 'green'}]},
-			{type: 'button', label: 'Open in gallery', onPress: openGallery},
 		],
 	});
+	assert.deepEqual(row && 'children' in row ? row.children[2] : undefined, {type: 'button', label: 'Open in gallery', onPress: openGallery});
 });
 
 test('a video gets the play badge and a landscape frame follows the probed size', () => {
@@ -190,7 +193,7 @@ test('an error shows the first line of what failed and a way into the gallery', 
 	]);
 });
 
-test('present shows Delivered, the note and a contained image with a caption per piece', () => {
+test('present shows Delivered, the note and an image shaped like each piece with its caption', () => {
 	const jobs: Readonly<Record<string, Job>> = {
 		a: job({id: 'a', title: 'Night Bloom story v3'}),
 		b: job({id: 'b', title: 'Ember &amp; Oak fall menu', input: {width: 1080, height: 1080}}),
@@ -205,6 +208,7 @@ test('present shows Delivered, the note and a contained image with a caption per
 		{
 			type: 'stack',
 			direction: 'column',
+			gap: 8,
 			children: [
 				{type: 'row', children: [{type: 'text', text: 'Delivered', bold: true}, {type: 'text', text: '2 pieces', dim: true}]},
 				{type: 'text', text: 'Final cut and the square post.'},
@@ -212,20 +216,23 @@ test('present shows Delivered, the note and a contained image with a caption per
 					type: 'stack',
 					direction: 'row',
 					align: 'start',
+					gap: 10,
 					children: [
 						{
 							type: 'stack',
 							direction: 'column',
+							gap: 6,
 							children: [
-								{type: 'image', src: SRC, alt: 'Night Bloom story v3', width: 180, height: 225, fit: 'contain'},
+								{type: 'image', src: SRC, alt: 'Night Bloom story v3', width: 180, height: 225, fit: 'cover'},
 								{type: 'row', children: [{type: 'text', text: 'Night Bloom story v3'}, {type: 'text', text: '1080 × 1920', dim: true}]},
 							],
 						},
 						{
 							type: 'stack',
 							direction: 'column',
+							gap: 6,
 							children: [
-								{type: 'image', src: SRC, alt: 'Ember & Oak fall menu', width: 180, height: 225, fit: 'contain'},
+								{type: 'image', src: SRC, alt: 'Ember & Oak fall menu', width: 200, height: 200, fit: 'cover'},
 								{type: 'row', children: [{type: 'text', text: 'Ember & Oak fall menu'}, {type: 'text', text: '1080 × 1080', dim: true}]},
 							],
 						},
@@ -297,10 +304,19 @@ test('malformed result JSON still gives a safe minimal card', () => {
 	assert.deepEqual(nodes, [
 		{
 			type: 'stack',
-			direction: 'column',
+			direction: 'row',
+			align: 'center',
+			gap: 12,
 			children: [
-				{type: 'status', state: 'done', text: 'Night Bloom story v2'},
-				{type: 'text', text: 'design · 1080 × 1920', dim: true},
+				{
+					type: 'stack',
+					direction: 'column',
+					gap: 3,
+					children: [
+						{type: 'status', state: 'done', text: 'Night Bloom story v2'},
+						{type: 'text', text: 'design · 1080 × 1920', dim: true},
+					],
+				},
 				{type: 'button', label: 'Open in gallery', onPress: openGallery},
 			],
 		},
@@ -323,7 +339,14 @@ test('an oversized or missing preview leaves the text column without an image', 
 	assert.equal(nodes?.length, 1);
 	assert.equal(nodes?.[0]?.type, 'stack');
 	assert.equal(JSON.stringify(nodes).includes('"image"'), false);
-	assert.equal((nodes?.[0] as {direction: string}).direction, 'column');
+	assert.equal((nodes?.[0] as {direction: string}).direction, 'row');
+});
+
+test('a square render gets a square thumbnail, not a cropped landscape box', () => {
+	const square = {...CLEAN, reviews: [{verdict: 'pass', probe: {kind: 'image', width: 1080, height: 1080, hasAudio: false, bytes: 10}, issues: []}]};
+	const row = toolRowCard(created(square), depsOf())?.[0];
+	const image = row && 'children' in row ? row.children[0] : undefined;
+	assert.deepEqual(image && 'width' in image ? {width: image.width, height: image.height} : undefined, {width: 80, height: 80});
 });
 
 const cardOf = (nodes: ReturnType<typeof toolRowCard>): string => JSON.stringify(nodes);
