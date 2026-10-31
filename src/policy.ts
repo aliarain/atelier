@@ -14,11 +14,13 @@ const ENTITIES: Readonly<Record<string, string>> = {
 };
 
 // Models writing HTML all day escape their titles too ("Ember &amp; Oak"). A title is plain
-// text shown by textContent, so decode the common entities once at the boundary.
+// text shown by textContent, so decode the common entities once at the boundary. Titles are
+// UI copy in the gallery, which never shows em or en dashes: a spaced dash becomes a colon.
 export function plainTitle(raw: unknown, fallback: string): string {
 	const value = typeof raw === 'string' ? raw : '';
 	const decoded = value.replace(/&(?:amp|lt|gt|quot|#39|apos|nbsp);/g, entity => ENTITIES[entity] ?? entity);
-	const trimmed = decoded.replace(/\s+/g, ' ').trim().slice(0, TITLE_LIMIT);
+	const undashed = decoded.replace(/\s+[–—]\s+/g, ': ').replace(/[–—]/g, '-');
+	const trimmed = undashed.replace(/\s+/g, ' ').trim().slice(0, TITLE_LIMIT);
 	return trimmed === '' ? fallback : trimmed;
 }
 
