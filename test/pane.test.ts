@@ -26,7 +26,7 @@ test('the pane is one status element and one button row when the host has status
 test('the pane falls back to the text line on hosts without status', () => {
 	assert.deepEqual(paneNodes({busy: [], hasStatus: false, onOpenGallery: noop})[0], {
 		type: 'text',
-		text: 'Idle',
+		text: 'Ready',
 		bold: true,
 	});
 	assert.deepEqual(paneNodes({busy: ['Poster'], hasStatus: false, onOpenGallery: noop})[0], {

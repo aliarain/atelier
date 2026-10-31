@@ -25,9 +25,7 @@ h1{font-size:13.5px;font-weight:600}
 #grid{padding:16px 18px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 @media (max-width:419px){#grid{grid-template-columns:minmax(0,1fr)}}
 @media (min-width:900px){#grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
-.tile{border-radius:var(--cc-radius,10px);border:1px solid var(--cc-border,rgba(165,153,233,.11));background:var(--cc-surface,#1E1E3F);overflow:hidden;cursor:default;outline:none}
-.tile.selected{border-color:var(--cc-border-strong,rgba(165,153,233,.22));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--cc-accent,#FAD000) 55%,transparent)}
-.tile:focus-visible{border-color:var(--cc-accent,#FAD000)}
+.tile{border-radius:var(--cc-radius,10px);border:1px solid var(--cc-border,rgba(165,153,233,.11));background:var(--cc-surface,#1E1E3F);overflow:hidden;cursor:default}
 .frame{position:relative}
 .actions{position:absolute;left:8px;right:8px;bottom:8px;display:flex;flex-wrap:wrap;justify-content:center;gap:6px;opacity:0;pointer-events:none;transition:opacity .12s}
 .tile:hover .actions,.tile:focus-within .actions{opacity:1;pointer-events:auto}
@@ -81,7 +79,7 @@ const STATE_WORD = {
 	completed: 'Completed',
 	failed: 'Failed',
 	uncertain: 'Uncertain',
-	cancelled: 'Cancelled',
+	cancelled: 'Stopped',
 };
 
 const isActive = (state) => ACTIVE[state] === true;
@@ -105,16 +103,38 @@ const jobKind = (job) => {
 	return KIND_BY_ENGINE[job.engine] || null;
 };
 
-const jobsFor = (jobs, filter) => (filter === 'all' ? jobs : jobs.filter((job) => jobKind(job) === filter));
+// A kind filter lists what exists to open: finished jobs with an output. A render still going or a
+// failed one has no file of that kind, so it only shows under All.
+const hasOutput = (job) => job.state === 'completed' && Array.isArray(job.outputs) && job.outputs.length > 0;
+
+const jobsFor = (jobs, filter) =>
+	filter === 'all' ? jobs : jobs.filter((job) => hasOutput(job) && jobKind(job) === filter);
 
 const filterCounts = (jobs) => {
 	const counts = {all: jobs.length, image: 0, video: 0, audio: 0};
 	jobs.forEach((job) => {
+		if (!hasOutput(job)) return;
 		const kind = jobKind(job);
 		if (kind in counts) counts[kind] += 1;
 	});
 	return counts;
 };
+
+// The model gets the whole error; a tile has room for the first line.
+const firstLine = (text) => String(text || '').split('\\n')[0].trim();
+
+// A tile is named by what it is and where it stands, so a screen reader hears more than the title.
+const tileLabel = (job) => job.title + ', ' + stateWord(job.state).toLowerCase();
+
+// Variant is the one action a failed or stopped job can take: the same brief, tried again. An
+// uncertain paid job may already be billed, so it offers nothing.
+const actionsFor = (job) => {
+	if (job.state === 'failed' || job.state === 'cancelled') return ['variant'];
+	if (job.state !== 'completed' || !hasOutput(job)) return [];
+	return job.presented ? ['variant', 'reveal'] : ['variant', 'reveal', 'present'];
+};
+
+const actionLabel = (label, title) => label + ' ' + title;
 
 // A segment with nothing in it is hidden, unless it is the selected one: hiding that would leave the bar with no selection.
 const visibleFilters = (counts, selected) =>
@@ -134,7 +154,7 @@ const countText = (jobs, filter = 'all') => {
 	if (shown.length === 0) return '';
 	const words = FILTER_WORD[filter];
 	const total = shown.length + ' ' + (shown.length === 1 ? words[0] : words[1]);
-	const active = shown.filter((job) => isActive(job.state)).length;
+	const active = shown.filter((job) => job.state === 'running').length;
 	if (active === 0) return total;
 	return total + ', ' + active + ' rendering';
 };
@@ -170,7 +190,6 @@ const ACTIONS = [
 	{id: 'present', label: 'Mark shown'},
 ];
 const cards = new Map();
-const selected = new Set();
 const segments = new Map();
 let allJobs = [];
 let lastText = '';
@@ -290,8 +309,8 @@ const metaRow = (job) => {
 		meta.append(make('span', 'label', stateWord(job.state)));
 		return meta;
 	}
-	const time = make('span', 'time', ago(job.createdAt, Date.now()));
-	time.dataset.ts = String(job.createdAt);
+	const time = make('span', 'time', ago(job.updatedAt, Date.now()));
+	time.dataset.ts = String(job.updatedAt);
 	const label = make('span', 'label');
 	label.append(job.engine + ' \\u00b7 ', time);
 	meta.append(label);
@@ -305,22 +324,18 @@ const metaRow = (job) => {
 const noteLines = (job) => {
 	const failed = job.state === 'failed' || job.state === 'uncertain';
 	if (!failed) return [];
-	const lines = job.error ? [make('div', 'note', job.error.message)] : [];
+	const lines = job.error ? [make('div', 'note', firstLine(job.error.message))] : [];
 	if (job.state === 'uncertain') lines.push(make('div', 'note', 'May already be paid. Ask before re-running.'));
 	return lines;
 };
 
-const toggleSelected = (id, node) => {
-	if (selected.has(id)) selected.delete(id);
-	else selected.add(id);
-	node.classList.toggle('selected', selected.has(id));
-};
-
 const actionRow = (job) => {
 	const row = make('div', 'actions');
-	ACTIONS.filter((action) => action.id !== 'present' || !job.presented).forEach((action) => {
+	const offered = actionsFor(job);
+	ACTIONS.filter((action) => offered.includes(action.id)).forEach((action) => {
 		const button = make('button', 'act', action.label);
 		button.type = 'button';
+		button.setAttribute('aria-label', actionLabel(action.label, job.title));
 		button.addEventListener('click', () => runAction(action.id, job, button));
 		row.append(button);
 	});
@@ -329,33 +344,22 @@ const actionRow = (job) => {
 
 const buildCard = (job) => {
 	const card = make('article', 'tile');
-	card.tabIndex = 0;
-	if (selected.has(job.id)) card.classList.add('selected');
+	card.setAttribute('aria-label', tileLabel(job));
 	const well = make('div', 'well');
 	job.outputs.forEach((output) => well.append(mediaNode(output, job.title)));
 	if (job.outputs.length === 0 && !isActive(job.state)) well.append(make('div', 'empty', 'No output'));
 	if (job.outputs.length === 0 && isActive(job.state)) card.classList.add('pending');
 	const frame = make('div', 'frame');
 	frame.append(well);
-	if (job.state === 'completed' && job.outputs.length > 0) {
+	if (actionsFor(job).length > 0) {
 		frame.append(actionRow(job));
-		if (jobKind(job) === 'video') card.classList.add('has-video');
+		if (hasOutput(job) && jobKind(job) === 'video') card.classList.add('has-video');
 	}
 	const body = make('div', 'body');
 	const title = make('div', 'title', job.title);
 	title.title = job.title;
 	body.append(title, metaRow(job), ...noteLines(job));
 	card.append(frame, body);
-	card.addEventListener('click', (event) => {
-		if (event.target.closest('video,audio,button')) return;
-		toggleSelected(job.id, card);
-	});
-	card.addEventListener('keydown', (event) => {
-		if (event.target !== card) return;
-		if (event.key !== 'Enter' && event.key !== ' ') return;
-		event.preventDefault();
-		toggleSelected(job.id, card);
-	});
 	return card;
 };
 
@@ -403,10 +407,7 @@ const render = () => {
 	const nodes = shown.map(cardFor);
 	const keep = new Set(nodes);
 	const ids = new Set(allJobs.map((job) => job.id));
-	[...cards.keys()].filter((id) => !ids.has(id)).forEach((id) => {
-		cards.delete(id);
-		selected.delete(id);
-	});
+	[...cards.keys()].filter((id) => !ids.has(id)).forEach((id) => cards.delete(id));
 	[...grid.children].filter((child) => !keep.has(child)).forEach((child) => child.remove());
 	nodes.forEach((node, index) => {
 		if (grid.children[index] !== node) grid.insertBefore(node, grid.children[index] || null);

@@ -19,7 +19,7 @@ export function supportsStatus(ui: ElementCapabilities): boolean {
 
 function statusLine(busy: readonly string[], hasStatus: boolean): PaneNode {
 	if (!hasStatus) {
-		return {type: 'text', text: busy.length > 0 ? `Making: ${busy.join(', ')}` : 'Idle', bold: true};
+		return {type: 'text', text: busy.length > 0 ? `Making: ${busy.join(', ')}` : 'Ready', bold: true};
 	}
 	const element: StatusElement =
 		busy.length > 0

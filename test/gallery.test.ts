@@ -14,6 +14,8 @@ const TOKEN = 'secret-token';
 interface PageJob {
 	readonly state: string;
 	readonly engine?: string;
+	readonly title?: string;
+	readonly presented?: boolean;
 	readonly outputs?: readonly {readonly kind: string}[];
 }
 
@@ -27,10 +29,14 @@ interface PageHelpers {
 	readonly visibleFilters: (counts: Readonly<Record<string, number>>, selected: string) => readonly string[];
 	readonly parseFilter: (value: unknown) => string | null;
 	readonly emptyText: (filter: string) => string;
+	readonly firstLine: (text: unknown) => string;
+	readonly tileLabel: (job: PageJob) => string;
+	readonly actionsFor: (job: PageJob) => readonly string[];
+	readonly actionLabel: (label: string, title: string) => string;
 }
 
 const helpers = runInNewContext(
-	`${PAGE_HELPERS};({countText, statusIcon, ago, jobKind, jobsFor, filterCounts, visibleFilters, parseFilter, emptyText})`,
+	`${PAGE_HELPERS};({countText, statusIcon, ago, jobKind, jobsFor, filterCounts, visibleFilters, parseFilter, emptyText, firstLine, tileLabel, actionsFor, actionLabel})`,
 ) as PageHelpers;
 const jobsIn = (...states: readonly string[]): readonly PageJob[] =>
 	states.map(state => ({state}));
@@ -177,7 +183,7 @@ test('countText only says what is true', () => {
 	);
 	assert.equal(
 		helpers.countText(jobsIn('queued', 'running', 'completed')),
-		'3 renders, 2 rendering',
+		'3 renders, 1 rendering',
 	);
 });
 
@@ -208,9 +214,9 @@ const library = [
 ];
 
 test('filters count and narrow the jobs, and unknown engines only show under All', () => {
-	assert.deepEqual({...helpers.filterCounts(library)}, {all: 5, image: 2, video: 2, audio: 0});
+	assert.deepEqual({...helpers.filterCounts(library)}, {all: 5, image: 2, video: 1, audio: 0});
 	assert.equal(helpers.jobsFor(library, 'all').length, 5);
-	assert.equal(helpers.jobsFor(library, 'video').length, 2);
+	assert.equal(helpers.jobsFor(library, 'video').length, 1);
 	assert.equal(helpers.jobsFor(library, 'audio').length, 0);
 });
 
@@ -232,9 +238,57 @@ test('the filter comes from an address value in plural or singular, or not at al
 test('the header count stays true for the current filter', () => {
 	assert.equal(helpers.countText(library, 'all'), '5 renders, 2 rendering');
 	assert.equal(helpers.countText(library, 'image'), '2 images');
-	assert.equal(helpers.countText(library, 'video'), '2 videos, 1 rendering');
+	assert.equal(helpers.countText(library, 'video'), '1 video');
 	assert.equal(helpers.countText([made('video', 'completed', 'video')], 'video'), '1 video');
 	assert.equal(helpers.countText(library, 'audio'), '');
+});
+
+test('kind counts include only finished jobs with an output, and only running jobs are rendering', () => {
+	const mixed = [
+		made('design', 'completed', 'image'),
+		made('design', 'failed'),
+		made('design', 'cancelled'),
+		made('design', 'uncertain'),
+		made('video', 'completed'),
+		made('motion', 'queued'),
+		made('motion', 'running'),
+	];
+	assert.deepEqual({...helpers.filterCounts(mixed)}, {all: 7, image: 1, video: 0, audio: 0});
+	assert.equal(helpers.jobsFor(mixed, 'image').length, 1);
+	assert.equal(helpers.countText(mixed, 'all'), '7 renders, 1 rendering');
+	assert.equal(helpers.countText(mixed, 'image'), '1 image');
+	assert.equal(helpers.countText(mixed, 'video'), '');
+});
+
+test('a tile shows the first line of an error and is named by its title and state', () => {
+	assert.equal(helpers.firstLine('Chrome exited 1\nstack line one\nstack line two'), 'Chrome exited 1');
+	assert.equal(helpers.firstLine('  one line  '), 'one line');
+	assert.equal(helpers.firstLine(undefined), '');
+	assert.equal(helpers.tileLabel({title: 'Night Bloom', state: 'completed'}), 'Night Bloom, completed');
+	assert.equal(helpers.tileLabel({title: 'Night Bloom', state: 'cancelled'}), 'Night Bloom, stopped');
+	assert.equal(helpers.tileLabel({title: 'Night Bloom', state: 'running'}), 'Night Bloom, rendering');
+	assert.equal(helpers.actionLabel('Variant', 'Night Bloom'), 'Variant Night Bloom');
+});
+
+test('failed and stopped tiles offer Variant, finished ones all three, uncertain and running none', () => {
+	const done = made('design', 'completed', 'image');
+	assert.deepEqual([...helpers.actionsFor(done)], ['variant', 'reveal', 'present']);
+	assert.deepEqual([...helpers.actionsFor({...done, presented: true})], ['variant', 'reveal']);
+	assert.deepEqual([...helpers.actionsFor(made('design', 'failed'))], ['variant']);
+	assert.deepEqual([...helpers.actionsFor(made('design', 'cancelled'))], ['variant']);
+	assert.deepEqual([...helpers.actionsFor(made('fal-image', 'uncertain'))], []);
+	assert.deepEqual([...helpers.actionsFor(made('design', 'running'))], []);
+	assert.deepEqual([...helpers.actionsFor(made('design', 'completed'))], []);
+});
+
+test('the page has no tile selection, reads time from updatedAt and says Stopped for cancelled', () => {
+	const html = renderIndexHtml(TOKEN);
+	assert.doesNotMatch(html, /toggleSelected|tabIndex|\.tile\.selected|const selected = new Set/);
+	assert.match(html, /ago\(job\.updatedAt, Date\.now\(\)\)/);
+	assert.doesNotMatch(html, /createdAt/);
+	assert.equal(helpers.statusIcon('cancelled'), 'dash');
+	assert.match(PAGE_HELPERS, /cancelled: 'Stopped'/);
+	assert.match(html, /setAttribute\('aria-label', tileLabel\(job\)\)/);
 });
 
 test('an empty filter says what is missing', () => {
