@@ -5,7 +5,7 @@ import {createServer} from 'node:http';
 import type {IncomingMessage, ServerResponse} from 'node:http';
 import {basename, join, sep} from 'node:path';
 import {renderIndexHtml} from './gallery-page.ts';
-import {loadJobs, outputDir} from './jobs.ts';
+import {loadJob, loadJobs, outputDir} from './jobs.ts';
 import {plainTitle} from './policy.ts';
 import type {Job, JobState, MediaKind} from './types.ts';
 
@@ -15,9 +15,25 @@ export interface GalleryHandle {
 	readonly close: () => Promise<void>;
 }
 
+export const GALLERY_ACTIONS = ['variant', 'reveal', 'present'] as const;
+
+export type GalleryAction = (typeof GALLERY_ACTIONS)[number];
+
+export interface GalleryActionResult {
+	readonly ok: boolean;
+	readonly message: string;
+}
+
+// The server only validates and dispatches; the side effects belong to the mod.
+export type GalleryActionHandler = (params: {
+	readonly action: GalleryAction;
+	readonly job: Job;
+}) => Promise<GalleryActionResult>;
+
 export type RouteDecision =
 	| {readonly kind: 'index'}
 	| {readonly kind: 'jobs'}
+	| {readonly kind: 'action'}
 	| {
 			readonly kind: 'media';
 			readonly jobId: string;
@@ -31,6 +47,7 @@ export interface RouteRequest {
 }
 
 interface Route {
+	readonly method: 'GET' | 'POST';
 	readonly pattern: RegExp;
 	readonly decide: (groups: Readonly<Record<string, string>>) => RouteDecision;
 }
@@ -49,9 +66,11 @@ function mediaDecision(jobId: string, file: string): RouteDecision {
 }
 
 const ROUTES: readonly Route[] = [
-	{pattern: /^\/$/, decide: () => ({kind: 'index'})},
-	{pattern: /^\/api\/jobs$/, decide: () => ({kind: 'jobs'})},
+	{method: 'GET', pattern: /^\/$/, decide: () => ({kind: 'index'})},
+	{method: 'GET', pattern: /^\/api\/jobs$/, decide: () => ({kind: 'jobs'})},
+	{method: 'POST', pattern: /^\/api\/action$/, decide: () => ({kind: 'action'})},
 	{
+		method: 'GET',
 		pattern: /^\/media\/(?<jobId>[^/]+)\/(?<file>[^/]+)$/,
 		decide: groups => mediaDecision(groups.jobId ?? '', groups.file ?? ''),
 	},
@@ -70,8 +89,8 @@ export function route(req: RouteRequest, token: string): RouteDecision {
 	if (!URL.canParse(req.url, BASE)) return NOT_FOUND;
 	const url = new URL(req.url, BASE);
 	if (!tokenMatches(url.searchParams.get('t'), token)) return FORBIDDEN;
-	if (req.method !== 'GET') return NOT_FOUND;
 	for (const candidate of ROUTES) {
+		if (candidate.method !== req.method) continue;
 		const match = candidate.pattern.exec(url.pathname);
 		if (match !== null) return candidate.decide(match.groups ?? {});
 	}
@@ -190,7 +209,7 @@ export function toGalleryJobs(
 const SECURITY_HEADERS = {'X-Content-Type-Options': 'nosniff'} as const;
 
 const INDEX_CSP =
-	"default-src 'self'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'";
+	"default-src 'self'; img-src 'self'; media-src 'self'; font-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'";
 
 // The token rides in the URL, so nothing the page links to may see it as a referrer.
 const INDEX_HEADERS = {
@@ -223,6 +242,92 @@ async function sendJobs(
 		'Cache-Control': 'no-store',
 	});
 	res.end(JSON.stringify(toGalleryJobs(jobs, token)));
+}
+
+const MAX_ACTION_BODY = 4096;
+
+function sendJson(
+	res: ServerResponse,
+	status: number,
+	body: GalleryActionResult,
+): void {
+	res.writeHead(status, {
+		...SECURITY_HEADERS,
+		'Content-Type': 'application/json; charset=utf-8',
+		'Cache-Control': 'no-store',
+		// An oversized body is drained, not read, so the connection must not be reused.
+		...(status === 413 ? {Connection: 'close'} : {}),
+	});
+	res.end(JSON.stringify(body));
+}
+
+// Resolves undefined as soon as the body passes the limit. The rest is still drained so the
+// client can read the 413.
+function readBody(req: IncomingMessage, limit: number): Promise<string | undefined> {
+	const declared = Number(req.headers['content-length'] ?? 0);
+	if (declared > limit) {
+		req.resume();
+		return Promise.resolve(undefined);
+	}
+	return new Promise(resolve => {
+		const chunks: Buffer[] = [];
+		let size = 0;
+		req.on('data', (chunk: Buffer) => {
+			size += chunk.length;
+			if (size > limit) return resolve(undefined);
+			chunks.push(chunk);
+		});
+		req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+		req.on('error', () => resolve(undefined));
+	});
+}
+
+function isGalleryAction(value: unknown): value is GalleryAction {
+	return GALLERY_ACTIONS.some(action => action === value);
+}
+
+function parseActionRequest(
+	text: string,
+): {readonly action: GalleryAction; readonly jobId: string} | undefined {
+	let value: unknown;
+	try {
+		value = JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+	if (typeof value !== 'object' || value === null) return undefined;
+	const {action, jobId} = value as {readonly action?: unknown; readonly jobId?: unknown};
+	if (!isGalleryAction(action)) return undefined;
+	if (typeof jobId !== 'string' || !JOB_ID.test(jobId)) return undefined;
+	return {action, jobId};
+}
+
+async function handleAction(params: {
+	readonly req: IncomingMessage;
+	readonly res: ServerResponse;
+	readonly cwd: string;
+	readonly onAction: GalleryActionHandler | undefined;
+}): Promise<void> {
+	const {req, res, cwd, onAction} = params;
+	if (onAction === undefined) {
+		return sendJson(res, 404, {ok: false, message: 'Actions are not available.'});
+	}
+	const text = await readBody(req, MAX_ACTION_BODY);
+	if (text === undefined) {
+		return sendJson(res, 413, {ok: false, message: 'That request is too large.'});
+	}
+	const request = parseActionRequest(text);
+	if (request === undefined) {
+		return sendJson(res, 400, {ok: false, message: 'That action is not supported.'});
+	}
+	const job = await loadJob(cwd, request.jobId);
+	if (job === undefined) {
+		return sendJson(res, 404, {ok: false, message: 'That render no longer exists.'});
+	}
+	const result = await onAction({action: request.action, job}).catch(
+		(): GalleryActionResult => ({ok: false, message: 'That did not work. Try again.'}),
+	);
+	return sendJson(res, 200, {ok: result.ok, message: result.message});
 }
 
 // Resolving symlinks on both sides stops a link inside the output folder from
@@ -289,14 +394,16 @@ function stream(
 async function handle(params: {
 	readonly cwd: string;
 	readonly token: string;
+	readonly onAction: GalleryActionHandler | undefined;
 	readonly req: IncomingMessage;
 	readonly res: ServerResponse;
 }): Promise<void> {
-	const {cwd, token, req, res} = params;
+	const {cwd, token, onAction, req, res} = params;
 	const decision = route({method: req.method ?? '', url: req.url ?? ''}, token);
 	if (decision.kind === 'reject') return sendStatus(res, decision.status);
 	if (decision.kind === 'index') return sendIndex(res, token);
 	if (decision.kind === 'jobs') return sendJobs(res, cwd, token);
+	if (decision.kind === 'action') return handleAction({req, res, cwd, onAction});
 	return sendMedia({req, res, cwd, jobId: decision.jobId, file: decision.file});
 }
 
@@ -309,11 +416,12 @@ export async function startGallery(params: {
 	readonly cwd: string;
 	readonly token: string;
 	readonly port?: number;
+	readonly onAction?: GalleryActionHandler;
 }): Promise<GalleryHandle> {
-	const {cwd, token, port = 0} = params;
+	const {cwd, token, port = 0, onAction} = params;
 	if (token === '') throw new Error('the gallery needs a non-empty token');
 	const server = createServer((req, res) => {
-		handle({cwd, token, req, res}).catch(() => failRequest(res));
+		handle({cwd, token, onAction, req, res}).catch(() => failRequest(res));
 	});
 	await new Promise<void>((resolve, reject) => {
 		server.once('error', reject);

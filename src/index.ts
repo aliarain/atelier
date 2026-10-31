@@ -4,7 +4,12 @@ import {dirname, join} from 'node:path';
 import type {AgentMessage, ModApi} from '@commandcode/harness';
 import {ENGINES, findEngine} from './engines/index.ts';
 import {execFileExec, mediaKindOf} from './exec.ts';
-import {startGallery, type GalleryHandle} from './gallery.ts';
+import {
+	type GalleryActionHandler,
+	type GalleryActionResult,
+	type GalleryHandle,
+	startGallery,
+} from './gallery.ts';
 import {
 	isPidAlive,
 	loadJob,
@@ -128,9 +133,31 @@ export default function studio(cmd: ModApi): void {
 	// Command Code builds that predate mod views lack these; the gallery link still works there.
 	const viewUi = cmd.ui as ModApi['ui'] & ViewUi & ElementCapabilities;
 
+	const onGalleryAction: GalleryActionHandler = async ({action, job}): Promise<GalleryActionResult> => {
+		const first = job.outputs[0];
+		if (job.state !== 'completed' || first === undefined) {
+			return {ok: false, message: 'Nothing to work with yet.'};
+		}
+		if (action === 'reveal') {
+			const result = await execFileExec({command: 'open', args: ['-R', first.path]});
+			return result.code === 0
+				? {ok: true, message: 'Shown in Finder.'}
+				: {ok: false, message: 'Could not open Finder.'};
+		}
+		if (action === 'present') {
+			await saveJob(cmd.cwd, markPresented(job, now()));
+			cmd.ui.toast(`Studio: ${job.title} marked as shown`, {level: 'success'});
+			return {ok: true, message: 'Marked as shown.'};
+		}
+		cmd.sendUserMessage(
+			`Make a variant of studio job ${job.id} ("${job.title}"): keep the format and message, try a different composition.`,
+		);
+		return {ok: true, message: 'Asked for a variant.'};
+	};
+
 	const ensureGallery = async (): Promise<GalleryHandle> => {
 		if (gallery) return gallery;
-		gallery = await startGallery({cwd: cmd.cwd, token});
+		gallery = await startGallery({cwd: cmd.cwd, token, onAction: onGalleryAction});
 		viewUi.view?.({id: GALLERY_VIEW, title: 'Studio', url: gallery.url});
 		return gallery;
 	};
