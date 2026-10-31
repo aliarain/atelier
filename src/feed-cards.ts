@@ -54,12 +54,17 @@ export interface FeedCardDeps {
 	readonly openGallery: () => Promise<void>;
 }
 
+// The host contract: `input` is the row's summary string and `result` the tool's output text.
+// Older or other hosts may hand the raw input object or the result content array, so both
+// shapes are accepted and normalized once in toolRowCard.
 export interface ToolRowProps {
 	readonly toolName: string;
 	readonly input?: unknown;
 	readonly status: 'pending' | 'success' | 'error';
-	readonly result?: readonly unknown[];
+	readonly result?: string | readonly unknown[];
 }
+
+const SUMMARY_TITLE_CHARS = 80;
 
 const PRESENT_LIMIT = 4;
 const CHIP_LIMIT = 3;
@@ -111,7 +116,8 @@ function asNumber(value: unknown): number | undefined {
 	return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
-function firstText(result: readonly unknown[] | undefined): string | undefined {
+function firstText(result: string | readonly unknown[] | undefined): string | undefined {
+	if (typeof result === 'string') return result;
 	for (const item of result ?? []) {
 		const record = asRecord(item);
 		if (record?.type === 'text' && typeof record.text === 'string') return record.text;
@@ -227,21 +233,25 @@ function chipRow(params: {
 	return {type: 'row', children: hidden > 0 ? [...shown, dim(`+${hidden} more`)] : shown};
 }
 
-function pendingCard(input: JsonObject | undefined, capabilities: readonly string[]): readonly FeedNode[] {
-	const engine = asString(input?.engine) ?? 'media';
-	const title = plainTitle(input?.title, engine);
+function pendingCard(input: JsonObject | undefined, summary: string | undefined, capabilities: readonly string[]): readonly FeedNode[] {
+	const engine = asString(input?.engine);
+	const fallback = summary !== undefined && summary.length <= SUMMARY_TITLE_CHARS ? summary : 'a new piece';
+	const title = plainTitle(input?.title, fallback);
 	const size = outputSizeOf(asRecord(input?.input));
 	const meta = engine === 'voice' ? 'voiceover' : [engine, size ? sizeLabel(size) : undefined].filter(Boolean).join(' · ');
-	const body = [headline({state: 'running', text: `Making ${title}`, capabilities}), dim(meta)];
+	const body = [
+		headline({state: 'running', text: `Making ${title}`, capabilities}),
+		...(meta === '' ? [] : [dim(meta)]),
+	];
 	return hasElements(capabilities, ['stack']) ? [{type: 'stack', direction: 'column', children: body}] : body;
 }
 
 const JOB_FAILURE = /^Job \S+ (failed|uncertain|cancelled): ([\s\S]*)$/;
 
 // The model reads the whole failure; the card has room for its first line.
-function errorCard(input: JsonObject | undefined, result: readonly unknown[] | undefined, deps: FeedCardDeps): readonly FeedNode[] {
+function errorCard(input: JsonObject | undefined, result: string | readonly unknown[] | undefined, deps: FeedCardDeps): readonly FeedNode[] {
 	const {capabilities} = deps;
-	const title = plainTitle(input?.title, asString(input?.engine) ?? 'media');
+	const title = plainTitle(input?.title, asString(input?.engine) ?? 'this piece');
 	const text = firstText(result)?.trim() ?? '';
 	const failure = JOB_FAILURE.exec(text);
 	const state = failure?.[1];
@@ -257,18 +267,21 @@ function errorCard(input: JsonObject | undefined, result: readonly unknown[] | u
 
 function successCard(params: {
 	readonly input: JsonObject | undefined;
-	readonly result: readonly unknown[] | undefined;
+	readonly result: string | readonly unknown[] | undefined;
 	readonly deps: FeedCardDeps;
 }): readonly FeedNode[] {
 	const {input, result, deps} = params;
 	const {capabilities} = deps;
 	const parsed = parseJson(firstText(result));
-	const engine = asString(input?.engine) ?? 'media';
-	const title = plainTitle(input?.title, engine);
+	const jobId = asString(parsed?.job_id);
+	// The saved job is the truth for title, engine and size: the row's input is only a summary.
+	const job = jobId === undefined ? undefined : deps.readJob(jobId);
+	const engine = job?.engine ?? asString(input?.engine) ?? 'design';
+	const title = plainTitle(job?.title ?? input?.title, engine);
 	const output = asRecord(asArray(parsed?.outputs)[0]);
 	const review = asRecord(asArray(parsed?.reviews)[0]);
 	const probe = asRecord(review?.probe);
-	const size = sizeOf(probe) ?? outputSizeOf(asRecord(input?.input));
+	const size = sizeOf(probe) ?? job?.size ?? outputSizeOf(job?.input ?? asRecord(input?.input));
 	const durationS = asNumber(probe?.durationS);
 	const meta = [engine, size ? sizeLabel(size) : undefined, durationS ? `${Number(durationS.toFixed(1))}s` : undefined]
 		.filter(Boolean)
@@ -283,7 +296,6 @@ function successCard(params: {
 	];
 	if (!hasElements(capabilities, ['image', 'stack'])) return body;
 
-	const jobId = asString(parsed?.job_id);
 	const src = jobId === undefined ? undefined : deps.readPreview(jobId);
 	const column: FeedNode = {type: 'stack', direction: 'column', children: body};
 	if (src === undefined) return [column];
@@ -315,8 +327,16 @@ function pieceOf(jobId: string, job: Job, deps: FeedCardDeps): Piece {
 }
 
 // Counts the distinct pieces that really loaded, shows the first few, and says how many more.
-function deliveredCard(input: JsonObject | undefined, deps: FeedCardDeps): readonly FeedNode[] | undefined {
-	const ids = [...new Set(asArray(input?.job_ids).filter((id): id is string => typeof id === 'string'))];
+function deliveredCard(
+	input: JsonObject | undefined,
+	result: string | readonly unknown[] | undefined,
+	deps: FeedCardDeps,
+): readonly FeedNode[] | undefined {
+	// The present result lists what was really delivered; the input is the fallback.
+	const presented = asArray(parseJson(firstText(result))?.presented).map(item => asString(asRecord(item)?.job_id));
+	const requested = asArray(input?.job_ids);
+	const source = presented.some(Boolean) ? presented : requested;
+	const ids = [...new Set(source.filter((id): id is string => typeof id === 'string'))];
 	const loaded = ids.flatMap((id): readonly {readonly id: string; readonly job: Job}[] => {
 		const job = deps.readJob(id);
 		return job === undefined ? [] : [{id, job}];
@@ -357,12 +377,13 @@ function deliveredCard(input: JsonObject | undefined, deps: FeedCardDeps): reado
 // undefined keeps the host's built-in row. The host calls this synchronously on every repaint,
 // so everything it needs comes from deps that read the disk with sync calls.
 export function toolRowCard(props: ToolRowProps, deps: FeedCardDeps): readonly FeedNode[] | undefined {
-	const input = asRecord(props.input);
+	const summary = typeof props.input === 'string' ? props.input.trim() : undefined;
+	const input = asRecord(props.input) ?? parseJson(summary);
 	if (props.toolName === 'atelier_create') {
-		if (props.status === 'pending') return pendingCard(input, deps.capabilities);
+		if (props.status === 'pending') return pendingCard(input, input === undefined ? summary || undefined : undefined, deps.capabilities);
 		if (props.status === 'error') return errorCard(input, props.result, deps);
 		return successCard({input, result: props.result, deps});
 	}
-	if (props.toolName === 'atelier_present' && props.status === 'success') return deliveredCard(input, deps);
+	if (props.toolName === 'atelier_present' && props.status === 'success') return deliveredCard(input, props.result, deps);
 	return undefined;
 }

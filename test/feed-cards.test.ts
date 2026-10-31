@@ -422,3 +422,39 @@ test('a design review with no layout check says Layout not checked, not All chec
 	assert.match(flat, /"text":"Layout not checked","dim":true/);
 	assert.doesNotMatch(flat, /All checks passed/);
 });
+
+// The desktop host passes the row's input as a summary string and the result as output text
+// (ModUiOverrideProps['tool_row']), not the raw input object or a content array.
+test('with the host contract a finished create takes its title, engine and size from the saved job', () => {
+	const props = {toolName: 'atelier_create', status: 'success' as const, input: 'design', result: JSON.stringify(CLEAN)};
+	const deps = depsOf({readJob: id => (id === 'j1' ? job({title: 'Atelier announce: IG square', input: {width: 1080, height: 1080}}) : undefined)});
+	const flat = cardOf(toolRowCard(props, deps));
+	assert.match(flat, /"text":"Atelier announce: IG square"/);
+	assert.match(flat, /"type":"image","src":"data:image\/jpeg;base64,AAAA"/);
+	assert.match(flat, /design · 1080 × 1920/);
+	assert.doesNotMatch(flat, /"text":"media"/);
+});
+
+test('with the host contract a pending create uses a short summary as its title', () => {
+	const props = {toolName: 'atelier_create', status: 'pending' as const, input: 'Launch poster v2'};
+	assert.deepEqual(toolRowCard(props, depsOf()), [
+		{type: 'stack', direction: 'column', children: [{type: 'status', state: 'running', text: 'Making Launch poster v2'}]},
+	]);
+});
+
+test('with the host contract a pending create with no summary says it is making a new piece', () => {
+	const props = {toolName: 'atelier_create', status: 'pending' as const, input: ''};
+	assert.deepEqual(toolRowCard(props, depsOf()), [
+		{type: 'stack', direction: 'column', children: [{type: 'status', state: 'running', text: 'Making a new piece'}]},
+	]);
+});
+
+test('with the host contract the delivered card reads its pieces from the present result', () => {
+	const result = JSON.stringify({gallery_url: 'http://127.0.0.1:1/?t=x', presented: [{job_id: 'j1', title: 'A', outputs: []}]});
+	const props = {toolName: 'atelier_present', status: 'success' as const, input: '', result};
+	const deps = depsOf({readJob: id => (id === 'j1' ? job({title: 'Atelier announce: IG square'}) : undefined)});
+	const flat = cardOf(toolRowCard(props, deps));
+	assert.match(flat, /"text":"Delivered","bold":true/);
+	assert.match(flat, /"text":"1 piece","dim":true/);
+	assert.match(flat, /"text":"Atelier announce: IG square"/);
+});
