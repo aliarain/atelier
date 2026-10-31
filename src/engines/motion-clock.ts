@@ -100,3 +100,9 @@ export function clockInstallSource(): string {
 export function seekExpression(timeMs: number): string {
 	return `window.__motionSeek(${timeMs})`;
 }
+
+// Replays the first `totalMs` of a page's life in one evaluation, a frame at a time, so a
+// still render sees timers fired and animations finished without waiting in real time.
+export function settleExpression(totalMs: number, frameMs = 16): string {
+	return `(() => { for (let t = ${frameMs}; t < ${totalMs}; t += ${frameMs}) window.__motionSeek(t); window.__motionSeek(${totalMs}); })()`;
+}

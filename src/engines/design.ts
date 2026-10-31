@@ -1,8 +1,8 @@
 import {constants} from 'node:fs';
-import {access, rm, stat, writeFile} from 'node:fs/promises';
+import {access, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {pathToFileURL} from 'node:url';
-import {engineFailure, stderrTail} from '../exec.ts';
+import {setTimeout as sleep} from 'node:timers/promises';
+import {engineFailure, isEngineFailure} from '../exec.ts';
 import type {
 	Availability,
 	Engine,
@@ -11,11 +11,20 @@ import type {
 	MediaOutput,
 	Parsed,
 } from '../types.ts';
+import {withChrome, withTimeout} from './chrome-session.ts';
+import type {ChromeSession} from './chrome-session.ts';
+import {clockInstallSource, settleExpression} from './motion-clock.ts';
+import {startRenderSandbox} from './render-sandbox.ts';
+import type {RenderSandbox} from './render-sandbox.ts';
 
 const MAX_HTML_CHARS = 400_000;
 const MIN_SIDE = 64;
 const MAX_SIDE = 4096;
-const RENDER_TIMEOUT_MS = 60_000;
+const LOAD_TIMEOUT_MS = 30_000;
+// Timers and animations in the first three seconds have played out before the shot, as they
+// did under Chrome's virtual time budget.
+const SETTLE_MS = 3000;
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 export interface DesignInput {
 	readonly html: string;
@@ -112,38 +121,6 @@ export async function findChrome(env: Env): Promise<string | undefined> {
 	return undefined;
 }
 
-async function fileBytes(path: string): Promise<number | undefined> {
-	try {
-		return (await stat(path)).size;
-	} catch {
-		return undefined;
-	}
-}
-
-export function chromeArgs(params: {
-	readonly profileDir: string;
-	readonly pngPath: string;
-	readonly sourceUrl: string;
-	readonly width: number;
-	readonly height: number;
-	readonly scale: number;
-}): readonly string[] {
-	return [
-		'--headless=new',
-		'--disable-gpu',
-		'--hide-scrollbars',
-		'--no-first-run',
-		'--no-default-browser-check',
-		'--allow-file-access-from-files',
-		`--user-data-dir=${params.profileDir}`,
-		`--force-device-scale-factor=${params.scale}`,
-		`--window-size=${params.width},${params.height}`,
-		'--virtual-time-budget=3000',
-		`--screenshot=${params.pngPath}`,
-		params.sourceUrl,
-	];
-}
-
 export interface LayoutRect {
 	readonly x: number;
 	readonly y: number;
@@ -191,7 +168,8 @@ const TALL_FRAME_RATIO = 1.7;
 const SAFE_TOP_RATIO = 0.12;
 const SAFE_BOTTOM_RATIO = 0.18;
 const TIGHT_EDGE_RATIO = 0.03;
-const QA_TIMEOUT_MS = 30_000;
+const QA_TIMEOUT_MS = 15_000;
+const QA_POLL_MS = 25;
 
 function layoutIssue(
 	kind: LayoutIssueKind,
@@ -404,79 +382,92 @@ const MEASURE_SCRIPT = String.raw`(function () {
         decoration: s.position === "absolute" && parseFloat(s.opacity) < 0.35
       });
     });
+    emit(boxes);
+  }
+  function emit(result) {
     var out = document.createElement("script");
     out.type = "application/json";
     out.id = "atelier-layout";
-    out.textContent = JSON.stringify({boxes: boxes}).replace(/</g, "\\u003c");
+    out.textContent = JSON.stringify({boxes: result}).replace(/</g, "\\u003c");
     document.body.appendChild(out);
+  }
+  function run() {
+    try { measure(); } catch (e) { emit(null); }
   }
   frame.addEventListener("load", function () {
     d = frame.contentDocument;
     w = frame.contentWindow;
     var ready = d.fonts && d.fonts.ready ? d.fonts.ready : Promise.resolve();
-    ready.then(function () { setTimeout(measure, 0); });
+    ready.then(function () { setTimeout(run, 0); });
   });
 })();`;
 
-const QA_SOURCE_FILE = 'source.html';
+const SOURCE_FILE = 'source.html';
+const QA_FILE = 'qa.html';
 
-// Headless Chrome clamps --window-size to the screen when dumping the DOM, so the page is
-// laid out inside an iframe of the exact canvas size. That keeps vw, vh and percentages true.
+// The page is laid out inside an iframe of the exact canvas size, so vw, vh and percentages
+// stay true whatever the window around it.
 export function qaDocument(params: {
 	readonly width: number;
 	readonly height: number;
 }): string {
-	const frame = `<iframe id="atelier-frame" src="${QA_SOURCE_FILE}" style="display:block;border:0;width:${params.width}px;height:${params.height}px"></iframe>`;
+	const frame = `<iframe id="atelier-frame" src="${SOURCE_FILE}" style="display:block;border:0;width:${params.width}px;height:${params.height}px"></iframe>`;
 	return `<!doctype html><html><body style="margin:0">${frame}<script>${MEASURE_SCRIPT}</script></body></html>`;
 }
 
-export function chromeQaArgs(params: {
-	readonly profileDir: string;
-	readonly sourceUrl: string;
-	readonly width: number;
-	readonly height: number;
-}): readonly string[] {
-	return [
-		'--headless=new',
-		'--disable-gpu',
-		'--hide-scrollbars',
-		'--no-first-run',
-		'--no-default-browser-check',
-		'--allow-file-access-from-files',
-		`--user-data-dir=${params.profileDir}`,
-		`--window-size=${params.width},${params.height}`,
-		'--virtual-time-budget=3000',
-		'--dump-dom',
-		params.sourceUrl,
-	];
+const LAYOUT_PROBE =
+	"document.getElementById('atelier-layout')?.outerHTML ?? ''";
+
+function evaluatedString(result: unknown): string {
+	const inner = isRecord(result) ? result['result'] : undefined;
+	const value = isRecord(inner) ? inner['value'] : undefined;
+	return typeof value === 'string' ? value : '';
 }
 
-// A second Chrome pass over the same document. It is advice for the model, so any failure
-// here leaves the render untouched and just yields no layout.json.
+// Waits for the injected script to leave its measurement in the page.
+async function readLayoutDom(params: {
+	readonly session: ChromeSession;
+	readonly sandbox: RenderSandbox;
+	readonly input: DesignInput;
+	readonly signal: AbortSignal;
+}): Promise<string> {
+	const {session, sandbox, input, signal} = params;
+	const page = await session.openPage({
+		width: input.width,
+		height: input.height,
+		scale: 1,
+	});
+	try {
+		await page.call('Page.navigate', {url: sandbox.url(QA_FILE)});
+		const deadline = Date.now() + QA_TIMEOUT_MS;
+		while (Date.now() < deadline) {
+			signal.throwIfAborted();
+			const dom = evaluatedString(
+				await page.call('Runtime.evaluate', {expression: LAYOUT_PROBE}),
+			);
+			if (dom !== '') return dom;
+			await sleep(QA_POLL_MS);
+		}
+		throw Error('The layout check did not finish');
+	} finally {
+		await page.close();
+	}
+}
+
+// A second page over the same document. It is advice for the model, so any failure here
+// leaves the render untouched and just yields no layout.json. An abort is not a failure: the
+// caller checks the signal once this returns.
 async function writeLayoutReport(params: {
-	readonly chrome: string;
+	readonly session: ChromeSession;
+	readonly sandbox: RenderSandbox;
 	readonly input: DesignInput;
 	readonly ctx: EngineRunContext;
 }): Promise<void> {
-	const {chrome, input, ctx} = params;
-	const qaPath = join(ctx.outDir, 'qa.html');
-	const profileDir = join(ctx.outDir, '.chrome-profile-qa');
+	const {session, sandbox, input, ctx} = params;
 	try {
-		await writeFile(qaPath, qaDocument(input));
-		const result = await ctx.exec({
-			command: chrome,
-			args: chromeQaArgs({
-				profileDir,
-				sourceUrl: pathToFileURL(qaPath).href,
-				width: input.width,
-				height: input.height,
-			}),
-			cwd: ctx.cwd,
-			signal: ctx.signal,
-			timeoutMs: QA_TIMEOUT_MS,
-		});
-		if (result.code !== 0) return;
-		const boxes = parseLayoutDom(result.stdout);
+		const boxes = parseLayoutDom(
+			await readLayoutDom({session, sandbox, input, signal: ctx.signal}),
+		);
 		if (boxes === undefined) return;
 		const report = classifyLayout({
 			width: input.width,
@@ -486,9 +477,112 @@ async function writeLayoutReport(params: {
 		await writeFile(join(ctx.outDir, 'layout.json'), JSON.stringify(report));
 	} catch {
 		return;
+	}
+}
+
+export function readPngSize(
+	png: Buffer,
+): {readonly width: number; readonly height: number} | undefined {
+	if (png.length < 24) return undefined;
+	if (PNG_SIGNATURE.some((byte, index) => png[index] !== byte)) return undefined;
+	if (png.toString('latin1', 12, 16) !== 'IHDR') return undefined;
+	return {width: png.readUInt32BE(16), height: png.readUInt32BE(20)};
+}
+
+function screenshotData(result: unknown): string {
+	const data = isRecord(result) ? result['data'] : undefined;
+	if (typeof data !== 'string') throw Error('Chrome returned no screenshot data');
+	return data;
+}
+
+async function captureDesign(params: {
+	readonly session: ChromeSession;
+	readonly sandbox: RenderSandbox;
+	readonly input: DesignInput;
+}): Promise<Buffer> {
+	const {session, sandbox, input} = params;
+	const page = await session.openPage({
+		width: input.width,
+		height: input.height,
+		scale: input.scale,
+	});
+	try {
+		await page.call('Page.addScriptToEvaluateOnNewDocument', {
+			source: clockInstallSource(),
+		});
+		const loaded = page.next('Page.loadEventFired');
+		const navigation = await page.call('Page.navigate', {
+			url: sandbox.url(SOURCE_FILE),
+		});
+		const errorText = isRecord(navigation) ? navigation['errorText'] : undefined;
+		if (typeof errorText === 'string') throw Error(`The page did not load: ${errorText}`);
+		await withTimeout(loaded, LOAD_TIMEOUT_MS, 'Page load');
+		await withTimeout(
+			page.call('Runtime.evaluate', {
+				expression: 'document.fonts.ready.then(() => true)',
+				awaitPromise: true,
+			}),
+			LOAD_TIMEOUT_MS,
+			'Font loading',
+		);
+		await page.call('Runtime.evaluate', {expression: settleExpression(SETTLE_MS)});
+		const shot = await withTimeout(
+			page.call('Page.captureScreenshot', {format: 'png'}),
+			LOAD_TIMEOUT_MS,
+			'Screenshot',
+		);
+		return Buffer.from(screenshotData(shot), 'base64');
 	} finally {
-		await rm(qaPath, {force: true});
-		await rm(profileDir, {recursive: true, force: true});
+		await page.close();
+	}
+}
+
+// What Chrome produced is checked, not how Chrome exited: it is killed once the shot is taken.
+function assertExpectedPng(png: Buffer, input: DesignInput): void {
+	const size = readPngSize(png);
+	const width = input.width * input.scale;
+	const height = input.height * input.scale;
+	if (size?.width === width && size.height === height) return;
+	throw Error(
+		size === undefined
+			? 'Chrome returned data that is not a PNG'
+			: `Chrome returned a ${size.width}x${size.height} PNG, expected ${width}x${height}`,
+	);
+}
+
+async function renderDesign(params: {
+	readonly chrome: string;
+	readonly input: DesignInput;
+	readonly ctx: EngineRunContext;
+	readonly pngPath: string;
+}): Promise<number> {
+	const {chrome, input, ctx, pngPath} = params;
+	const source = wrapHtml(input.html);
+	await writeFile(join(ctx.outDir, SOURCE_FILE), source);
+	const sandbox = await startRenderSandbox({
+		cwd: ctx.cwd,
+		documents: {[SOURCE_FILE]: source, [QA_FILE]: qaDocument(input)},
+	});
+	try {
+		return await withChrome(
+			{
+				chrome,
+				sandbox,
+				width: input.width,
+				height: input.height,
+				signal: ctx.signal,
+			},
+			async session => {
+				const png = await captureDesign({session, sandbox, input});
+				assertExpectedPng(png, input);
+				await writeFile(pngPath, png);
+				await writeLayoutReport({session, sandbox, input, ctx});
+				ctx.signal.throwIfAborted();
+				return png.length;
+			},
+		);
+	} finally {
+		await sandbox.close();
 	}
 }
 
@@ -504,7 +598,7 @@ export const designEngine: Engine<DesignInput> = {
 			html: {
 				type: 'string',
 				description:
-					'A full HTML document, or an HTML/SVG fragment (wrapped with margin 0). Self-contained: inline CSS, inline SVG, data: URIs or https assets.',
+					'A full HTML document, or an HTML/SVG fragment (wrapped with margin 0). Self-contained: inline CSS, inline SVG, data: URIs. The page has no network, so https and file assets do not load. An earlier output of this project loads from /out/<jobId>/<file>.',
 			},
 			width: {
 				type: 'integer',
@@ -545,36 +639,19 @@ export const designEngine: Engine<DesignInput> = {
 			});
 		}
 
-		const sourcePath = join(ctx.outDir, QA_SOURCE_FILE);
 		const pngPath = join(ctx.outDir, 'design.png');
-		const profileDir = join(ctx.outDir, '.chrome-profile');
-		await writeFile(sourcePath, wrapHtml(input.html));
-
-		const result = await ctx.exec({
-			command: chrome,
-			args: chromeArgs({
-				profileDir,
-				pngPath,
-				sourceUrl: pathToFileURL(sourcePath).href,
-				width: input.width,
-				height: input.height,
-				scale: input.scale,
-			}),
-			cwd: ctx.cwd,
-			signal: ctx.signal,
-			timeoutMs: RENDER_TIMEOUT_MS,
-		});
-		await rm(profileDir, {recursive: true, force: true});
-
-		const bytes = result.code === 0 ? await fileBytes(pngPath) : undefined;
-		if (bytes === undefined || bytes === 0) {
-			throw engineFailure({
-				code: 'render_failed',
-				message: `Chrome exited with code ${result.code} and wrote no PNG.\n${stderrTail(result.stderr)}`,
-				retryable: true,
-			});
-		}
-		await writeLayoutReport({chrome, input, ctx});
+		const bytes = await renderDesign({chrome, input, ctx, pngPath}).catch(
+			(error: unknown) => {
+				// A cancelled run reports as cancelled, whatever Chrome said while it was killed.
+				ctx.signal.throwIfAborted();
+				if (isEngineFailure(error)) throw error;
+				throw engineFailure({
+					code: 'render_failed',
+					message: `Chrome could not render the design: ${error instanceof Error ? error.message : String(error)}`,
+					retryable: true,
+				});
+			},
+		);
 		return [{path: pngPath, kind: 'image', bytes}];
 	},
 };

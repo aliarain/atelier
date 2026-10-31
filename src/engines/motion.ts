@@ -1,8 +1,5 @@
-import {spawn} from 'node:child_process';
-import {access, mkdir, readFile, rm, stat, writeFile} from 'node:fs/promises';
+import {access, mkdir, rm, stat, writeFile} from 'node:fs/promises';
 import {isAbsolute, join} from 'node:path';
-import {setTimeout as sleep} from 'node:timers/promises';
-import {pathToFileURL} from 'node:url';
 import {engineFailure, stderrTail} from '../exec.ts';
 import type {
 	Availability,
@@ -13,9 +10,15 @@ import type {
 	MediaOutput,
 	Parsed,
 } from '../types.ts';
+import {withChrome, withTimeout} from './chrome-session.ts';
+import type {ChromePage} from './chrome-session.ts';
 import {findChrome, wrapHtml} from './design.ts';
 import {clockInstallSource, seekExpression} from './motion-clock.ts';
+import {startRenderSandbox} from './render-sandbox.ts';
 import {mixAudioFilters, num} from './video.ts';
+
+export {cdpRequest, parseCdpMessage} from './chrome-session.ts';
+export type {CdpMessage} from './chrome-session.ts';
 
 export interface MotionInput {
 	readonly html: string;
@@ -32,16 +35,14 @@ type RawRecord = Readonly<Record<string, unknown>>;
 
 const MAX_HTML_CHARS = 400_000;
 const FPS_CHOICES: readonly number[] = [24, 30];
-const PORT_FILE_TIMEOUT_MS = 10_000;
-const PORT_FILE_POLL_MS = 50;
 const LOAD_TIMEOUT_MS = 30_000;
 // One frame is a clock seek plus a screenshot; far longer means a hung page.
 const FRAME_TIMEOUT_MS = 30_000;
 const ENCODE_TIMEOUT_MS = 10 * 60 * 1000;
 const SOURCE_FILE = 'source.html';
 const OUTPUT_FILE = 'motion.mp4';
-const PROFILE_DIR = '.chrome-motion';
 const FRAMES_DIR = 'frames';
+const FRAME_PATTERN = '%05d.png';
 
 const SCHEMA: JsonObjectSchema = {
 	type: 'object',
@@ -49,7 +50,7 @@ const SCHEMA: JsonObjectSchema = {
 		html: {
 			type: 'string',
 			description:
-				'A full HTML document, or a fragment (wrapped with margin 0), whose CSS animations, transitions, SVG animation or requestAnimationFrame / Web Animations script play from time zero. Self-contained. Rendered frame by frame on a virtual clock, so playback is exact whatever the machine speed.',
+				'A full HTML document, or a fragment (wrapped with margin 0), whose CSS animations, transitions, SVG animation or requestAnimationFrame / Web Animations script play from time zero. Self-contained: the page has no network, so https and file assets do not load. Rendered frame by frame on a virtual clock, so playback is exact whatever the machine speed.',
 		},
 		width: {
 			type: 'integer',
@@ -175,29 +176,11 @@ export function frameFileName(index: number): string {
 	return `${String(index).padStart(5, '0')}.png`;
 }
 
-export function chromeMotionArgs(params: {
-	readonly profileDir: string;
-	readonly width: number;
-	readonly height: number;
-}): readonly string[] {
-	return [
-		'--headless=new',
-		'--disable-gpu',
-		'--hide-scrollbars',
-		'--no-first-run',
-		'--no-default-browser-check',
-		'--allow-file-access-from-files',
-		'--mute-audio',
-		`--user-data-dir=${params.profileDir}`,
-		'--remote-debugging-port=0',
-		`--window-size=${params.width},${params.height}`,
-		'about:blank',
-	];
-}
-
+// ffmpeg reads the frames by pattern from its working directory, because `%` in an absolute
+// project path would be taken for part of the pattern.
 export function buildMotionFfmpegArgs(
 	input: MotionInput,
-	params: {readonly framesDir: string; readonly outPath: string},
+	params: {readonly outPath: string},
 ): readonly string[] {
 	const audioPaths = [input.voiceover, input.music].filter(
 		(path): path is string => path !== undefined,
@@ -222,7 +205,7 @@ export function buildMotionFfmpegArgs(
 		'-framerate',
 		String(input.fps),
 		'-i',
-		join(params.framesDir, '%05d.png'),
+		FRAME_PATTERN,
 		...audioPaths.flatMap(path => ['-i', path]),
 		'-map',
 		'0:v',
@@ -243,194 +226,6 @@ export function buildMotionFfmpegArgs(
 	];
 }
 
-export function cdpRequest(
-	id: number,
-	method: string,
-	params: Readonly<Record<string, unknown>> = {},
-): string {
-	return JSON.stringify({id, method, params});
-}
-
-export type CdpMessage =
-	| {readonly kind: 'result'; readonly id: number; readonly result: unknown}
-	| {readonly kind: 'error'; readonly id: number; readonly message: string}
-	| {readonly kind: 'event'; readonly method: string; readonly params: unknown};
-
-export function parseCdpMessage(text: string): CdpMessage | undefined {
-	let raw: unknown;
-	try {
-		raw = JSON.parse(text);
-	} catch {
-		return undefined;
-	}
-	if (!isRecord(raw)) return undefined;
-	const id = raw['id'];
-	const error = raw['error'];
-	if (typeof id === 'number' && isRecord(error)) {
-		return {kind: 'error', id, message: String(error['message'] ?? 'unknown error')};
-	}
-	if (typeof id === 'number') return {kind: 'result', id, result: raw['result']};
-	const method = raw['method'];
-	if (typeof method === 'string') return {kind: 'event', method, params: raw['params']};
-	return undefined;
-}
-
-interface Settler {
-	readonly resolve: (value: unknown) => void;
-	readonly reject: (reason: Error) => void;
-}
-
-interface Cdp {
-	readonly call: (method: string, params?: Readonly<Record<string, unknown>>) => Promise<unknown>;
-	// Register before the call that triggers the event, or a fast event is missed.
-	readonly next: (event: string) => Promise<unknown>;
-	readonly close: () => void;
-}
-
-function connectCdp(url: string): Promise<Cdp> {
-	return new Promise((resolve, reject) => {
-		const socket = new WebSocket(url);
-		const pending = new Map<number, Settler>();
-		const waiters = new Map<string, Settler[]>();
-		let lastId = 0;
-		let closed: Error | undefined;
-
-		const failAll = (error: Error): void => {
-			closed = error;
-			for (const settler of pending.values()) settler.reject(error);
-			for (const list of waiters.values()) {
-				for (const settler of list) settler.reject(error);
-			}
-			pending.clear();
-			waiters.clear();
-		};
-
-		socket.addEventListener('message', event => {
-			const message = parseCdpMessage(String(event.data));
-			if (message === undefined) return;
-			if (message.kind === 'event') {
-				const list = waiters.get(message.method) ?? [];
-				waiters.delete(message.method);
-				for (const settler of list) settler.resolve(message.params);
-				return;
-			}
-			const settler = pending.get(message.id);
-			pending.delete(message.id);
-			if (settler === undefined) return;
-			if (message.kind === 'error') settler.reject(Error(message.message));
-			else settler.resolve(message.result);
-		});
-		socket.addEventListener('close', () => failAll(Error('Chrome closed the DevTools connection')));
-		socket.addEventListener('error', () => {
-			const error = Error('DevTools connection failed');
-			failAll(error);
-			reject(error);
-		});
-		socket.addEventListener('open', () => {
-			resolve({
-				call: (method, params) =>
-					new Promise((done, failed) => {
-						if (closed !== undefined) return failed(closed);
-						lastId += 1;
-						pending.set(lastId, {resolve: done, reject: failed});
-						socket.send(cdpRequest(lastId, method, params));
-					}),
-				next: event =>
-					new Promise((done, failed) => {
-						if (closed !== undefined) return failed(closed);
-						waiters.set(event, [...(waiters.get(event) ?? []), {resolve: done, reject: failed}]);
-					}),
-				close: () => socket.close(),
-			});
-		});
-	});
-}
-
-async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-	const timer = AbortSignal.timeout(ms);
-	const timedOut = new Promise<never>((_, reject) => {
-		timer.addEventListener('abort', () => reject(Error(`${label} timed out after ${ms} ms`)), {
-			once: true,
-		});
-	});
-	return Promise.race([promise, timedOut]);
-}
-
-interface ChromeProcess {
-	readonly port: number;
-	readonly stop: () => Promise<void>;
-}
-
-async function readPort(portFile: string, exited: Promise<string>): Promise<number> {
-	const deadline = Date.now() + PORT_FILE_TIMEOUT_MS;
-	while (Date.now() < deadline) {
-		const text = await readFile(portFile, 'utf8').catch(() => '');
-		const port = Number(text.split('\n')[0]);
-		if (Number.isInteger(port) && port > 0) return port;
-		const early = await Promise.race([exited, sleep(PORT_FILE_POLL_MS).then(() => undefined)]);
-		if (early !== undefined) throw Error(`Chrome exited before it opened DevTools.\n${early}`);
-	}
-	throw Error('Chrome did not open its DevTools port within 10 seconds');
-}
-
-// Chrome forks helpers into its own process group (detached makes it a leader), so one group
-// kill ends the browser and every renderer; killing only the lead pid leaves orphans.
-async function launchChrome(params: {
-	readonly chrome: string;
-	readonly profileDir: string;
-	readonly width: number;
-	readonly height: number;
-	readonly signal: AbortSignal;
-}): Promise<ChromeProcess> {
-	const {chrome, profileDir, width, height, signal} = params;
-	const child = spawn(chrome, [...chromeMotionArgs({profileDir, width, height})], {
-		detached: true,
-		stdio: ['ignore', 'ignore', 'pipe'],
-	});
-	let stderr = '';
-	child.stderr.on('data', chunk => {
-		stderr = (stderr + String(chunk)).slice(-4000);
-	});
-	const exited = new Promise<string>(resolve => {
-		child.once('exit', () => resolve(stderrTail(stderr)));
-		child.once('error', error => resolve(error.message));
-	});
-	const kill = (): void => {
-		try {
-			if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
-		} catch {
-			// the group is already gone
-		}
-	};
-	const stop = async (): Promise<void> => {
-		signal.removeEventListener('abort', kill);
-		kill();
-		await exited;
-		await rm(profileDir, {recursive: true, force: true});
-	};
-	signal.addEventListener('abort', kill, {once: true});
-	try {
-		const port = await readPort(join(profileDir, 'DevToolsActivePort'), exited);
-		return {port, stop};
-	} catch (error) {
-		await stop();
-		throw error;
-	}
-}
-
-async function pageSocketUrl(port: number): Promise<string> {
-	const base = `http://127.0.0.1:${port}`;
-	const listed: unknown = await fetch(`${base}/json/list`).then(response => response.json());
-	const pages = Array.isArray(listed) ? listed.filter(isRecord) : [];
-	const existing = pages.find(target => target['type'] === 'page');
-	const target =
-		existing ??
-		(await fetch(`${base}/json/new?about:blank`, {method: 'PUT'}).then(response => response.json()));
-	const url = isRecord(target) ? target['webSocketDebuggerUrl'] : undefined;
-	if (typeof url !== 'string') throw Error('Chrome reported no page target');
-	return url;
-}
-
 function screenshotData(result: unknown): string {
 	const data = isRecord(result) ? result['data'] : undefined;
 	if (typeof data !== 'string') throw Error('Chrome returned no screenshot data');
@@ -445,45 +240,40 @@ function assertNoPageError(evaluated: unknown): void {
 	throw Error(`The page threw while advancing the clock: ${String(description ?? details['text'])}`);
 }
 
+// Each frame is written before the next is captured, so a failed write stops the render at
+// once instead of surfacing as an unhandled rejection later.
 async function renderFrames(params: {
-	readonly cdp: Cdp;
+	readonly page: ChromePage;
 	readonly input: MotionInput;
 	readonly sourceUrl: string;
 	readonly framesDir: string;
 }): Promise<void> {
-	const {cdp, input, sourceUrl, framesDir} = params;
-	await cdp.call('Page.enable');
-	await cdp.call('Emulation.setDeviceMetricsOverride', {
-		width: input.width,
-		height: input.height,
-		deviceScaleFactor: 1,
-		mobile: false,
-	});
-	await cdp.call('Page.addScriptToEvaluateOnNewDocument', {source: clockInstallSource()});
-	const loaded = cdp.next('Page.loadEventFired');
-	await cdp.call('Page.navigate', {url: sourceUrl});
+	const {page, input, sourceUrl, framesDir} = params;
+	await page.call('Page.addScriptToEvaluateOnNewDocument', {source: clockInstallSource()});
+	const loaded = page.next('Page.loadEventFired');
+	const navigation = await page.call('Page.navigate', {url: sourceUrl});
+	const errorText = isRecord(navigation) ? navigation['errorText'] : undefined;
+	if (typeof errorText === 'string') throw Error(`The page did not load: ${errorText}`);
 	await withTimeout(loaded, LOAD_TIMEOUT_MS, 'Page load');
 	await withTimeout(
-		cdp.call('Runtime.evaluate', {expression: 'document.fonts.ready.then(() => true)', awaitPromise: true}),
+		page.call('Runtime.evaluate', {expression: 'document.fonts.ready.then(() => true)', awaitPromise: true}),
 		LOAD_TIMEOUT_MS,
 		'Font loading',
 	);
-	const writes: Promise<void>[] = [];
 	for (let index = 0; index < frameCount(input); index += 1) {
 		const seek = await withTimeout(
-			cdp.call('Runtime.evaluate', {expression: seekExpression((index * 1000) / input.fps)}),
+			page.call('Runtime.evaluate', {expression: seekExpression((index * 1000) / input.fps)}),
 			FRAME_TIMEOUT_MS,
 			`Frame ${index} clock`,
 		);
 		assertNoPageError(seek);
 		const shot = await withTimeout(
-			cdp.call('Page.captureScreenshot', {format: 'png', optimizeForSpeed: true}),
+			page.call('Page.captureScreenshot', {format: 'png', optimizeForSpeed: true}),
 			FRAME_TIMEOUT_MS,
 			`Frame ${index} screenshot`,
 		);
-		writes.push(writeFile(join(framesDir, frameFileName(index)), Buffer.from(screenshotData(shot), 'base64')));
+		await writeFile(join(framesDir, frameFileName(index)), Buffer.from(screenshotData(shot), 'base64'));
 	}
-	await Promise.all(writes);
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -508,25 +298,20 @@ async function renderWithChrome(params: {
 	readonly framesDir: string;
 }): Promise<void> {
 	const {chrome, input, ctx, framesDir} = params;
-	const sourcePath = join(ctx.outDir, SOURCE_FILE);
-	await writeFile(sourcePath, wrapHtml(input.html));
+	const source = wrapHtml(input.html);
+	await writeFile(join(ctx.outDir, SOURCE_FILE), source);
 	await mkdir(framesDir, {recursive: true});
-	const browser = await launchChrome({
-		chrome,
-		profileDir: join(ctx.outDir, PROFILE_DIR),
-		width: input.width,
-		height: input.height,
-		signal: ctx.signal,
-	});
+	const sandbox = await startRenderSandbox({cwd: ctx.cwd, documents: {[SOURCE_FILE]: source}});
 	try {
-		const cdp = await connectCdp(await pageSocketUrl(browser.port));
-		try {
-			await renderFrames({cdp, input, sourceUrl: pathToFileURL(sourcePath).href, framesDir});
-		} finally {
-			cdp.close();
-		}
+		await withChrome(
+			{chrome, sandbox, width: input.width, height: input.height, signal: ctx.signal},
+			async session => {
+				const page = await session.openPage({width: input.width, height: input.height, scale: 1});
+				await renderFrames({page, input, sourceUrl: sandbox.url(SOURCE_FILE), framesDir});
+			},
+		);
 	} finally {
-		await browser.stop();
+		await sandbox.close();
 	}
 }
 
@@ -576,6 +361,8 @@ export const motionEngine: Engine<MotionInput> = {
 		const outPath = join(ctx.outDir, OUTPUT_FILE);
 		try {
 			await renderWithChrome({chrome, input, ctx, framesDir}).catch((error: unknown) => {
+				// A cancelled run reports as cancelled, whatever Chrome said while it was killed.
+				ctx.signal.throwIfAborted();
 				throw engineFailure({
 					code: 'render_failed',
 					message: `Chrome could not render the animation: ${error instanceof Error ? error.message : String(error)}`,
@@ -584,8 +371,8 @@ export const motionEngine: Engine<MotionInput> = {
 			});
 			const result = await ctx.exec({
 				command: 'ffmpeg',
-				args: buildMotionFfmpegArgs(input, {framesDir, outPath}),
-				cwd: ctx.cwd,
+				args: buildMotionFfmpegArgs(input, {outPath}),
+				cwd: framesDir,
 				signal: ctx.signal,
 				timeoutMs: ENCODE_TIMEOUT_MS,
 			});
@@ -597,7 +384,8 @@ export const motionEngine: Engine<MotionInput> = {
 				});
 			}
 		} finally {
-			await rm(framesDir, {recursive: true, force: true});
+			// Failing to clean up must not hide why the render failed.
+			await rm(framesDir, {recursive: true, force: true}).catch(() => undefined);
 		}
 		const {size} = await stat(outPath);
 		return [{path: outPath, kind: 'video', bytes: size}];
