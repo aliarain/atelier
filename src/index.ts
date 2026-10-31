@@ -1,6 +1,7 @@
 import {randomBytes} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import type {AgentMessage, ModApi} from '@commandcode/harness';
 import {ENGINES, findEngine} from './engines/index.ts';
 import {execFileExec, mediaKindOf} from './exec.ts';
@@ -181,6 +182,10 @@ export default function atelier(cmd: ModApi): void {
 			if (settled !== job) await saveJob(cmd.cwd, settled);
 		}
 	};
+
+	// The manifest's `commandcode.skills` is not honored by every host (the desktop app skipped it),
+	// so the craft skills are also registered from code, which every host collects at factory time.
+	cmd.addSkillsPath(join(dirname(fileURLToPath(import.meta.url)), '..', 'skills'));
 
 	cmd.addFlag('atelier-allow-paid', {
 		type: 'boolean',
