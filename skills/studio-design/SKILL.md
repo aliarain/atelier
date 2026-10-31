@@ -48,6 +48,7 @@ Look at the preview before you say anything. Then check:
 - Is the message readable at thumbnail size?
 - Is anything clipped, overlapping, or touching an edge?
 - Does the review return a `blank` or `dimensions` problem?
+- `studio_create` also reports layout issues (clipped text, off canvas, overlap, safe area, tight edges). Fix every one before presenting.
 
 Fix and render again. Two or three iterations is normal. Name versions in the title ("Launch poster v2") so the gallery tells them apart.
 
