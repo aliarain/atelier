@@ -32,13 +32,13 @@ Use `scale: 2` only when the person needs a crisp export. Previews do not need i
 - Send a full document. Set `html, body { margin: 0; width: <W>px; height: <H>px; overflow: hidden; }` so the canvas matches the render size exactly.
 - Lay out with CSS grid or flexbox and real padding. Keep a safe margin of at least 6% of the short side. On 9:16 frames, keep text out of the top 12% and bottom 18%, where app UI sits.
 - Typography carries most of the quality:
-  - Use system families that exist on macOS: `"SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif`; `"New York", Georgia, serif`; `"SF Mono", Menlo, monospace`. Do not load web fonts.
+  - Use only families the renderer has: `system-ui, "Helvetica Neue", Helvetica, Arial, sans-serif`; `Georgia, serif`; `Menlo, monospace`. SF Pro, New York and SF Mono are not available in the renderer, so naming them silently falls back. Do not load web fonts.
   - Headlines are 7 to 12% of the canvas height, tight `line-height: 1.0 to 1.1` and slight negative `letter-spacing`.
   - Body text is never under 28px on a 1080-wide canvas.
   - Use `text-wrap: balance` on headlines.
 - Color: one dominant, one accent, one neutral. Check contrast: light text on a busy or mid-tone area needs a scrim (`linear-gradient` overlay) behind it.
 - Depth without clutter: one gradient, soft shadows (`0 30px 80px rgba(0,0,0,.35)`), rounded shapes, and SVG shapes or icons drawn inline.
-- Images: reference earlier outputs by absolute `file://` path. For a photo look without a paid engine, build it from layered gradients, noise via SVG `feTurbulence`, and shapes.
+- Images: reference an earlier output as `/out/<jobId>/<file>`, for example `<img src="/out/mvwk-ab12cd/fal-image.png">`. The render serves `<cwd>/.atelier/out` at `/out`, and only images, audio and video from there. `file://` paths and external `https://` assets do not load: everything is inline (SVG, CSS, `data:` URIs) or comes from `/out`. For a photo look without a paid engine, build it from layered gradients, noise via SVG `feTurbulence`, and shapes.
 - Write real copy. No lorem ipsum, no "Your text here", no placeholder brand names unless asked.
 
 ## After each render

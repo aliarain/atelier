@@ -2,6 +2,12 @@
 	"name": "atelier",
 	"version": "0.0.1",
 	"private": true,
+	"license": "UNLICENSED",
+	"author": "Ali Arain",
+	"repository": {
+		"type": "git",
+		"url": "git+ssh://git@github.com/aliarain/atelier.git"
+	},
 	"description": "Atelier: a creative studio for Command Code. Design, voice and video jobs with measured review and a live gallery.",
 	"type": "module",
 	"keywords": ["cmd-mod", "cmd-mod-tool", "cmd-mod-hook", "cmd-mod-command"],

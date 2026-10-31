@@ -15,14 +15,14 @@ Text to speech sounds natural only when the script is written for the ear:
 - Spell out what should be said: "twenty twenty six", "five dollars", "AI" as "A I" when it should be lettered.
 - Use commas for small pauses and a new sentence for a real pause. No ellipses, emoji or markdown.
 - Front-load the hook. The first sentence decides whether people keep watching.
-- Read it at about 150 words per minute: 30 seconds is about 75 words.
+- The default rate speaks about 175 to 200 words per minute: 30 seconds is about 90 to 100 words. Do not size a script from a slower pace. Make the take, then read the real duration from the review.
 
 ## Voice choice
 
 - Default `Samantha` for a clear US English voice. Try `Daniel` (British), `Karen` (Australian) or `Moira` (Irish) for variety.
-- `rate` 170 to 190 suits ads and reels, 150 to 165 suits explainers.
+- `rate` 170 to 190 suits ads and reels, 150 to 165 suits explainers. A lower rate lengthens the take, so fewer words fit.
 - If the engine reports an unknown voice, pick one from the list it returns.
 
 ## After the take
 
-The review reports duration, loudness and silences. A silence warning in the middle usually means a stray blank line or a very long pause in the script. Note the duration, because the video storyboard is timed from it.
+The review reports the measured duration and any loudness or silence problems. A silence warning in the middle usually means a stray blank line or a very long pause in the script. Note the duration, because the video storyboard is timed from it.

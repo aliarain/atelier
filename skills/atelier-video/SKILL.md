@@ -19,7 +19,7 @@ Rules of thumb:
 - Shorts and reels run 15 to 30 seconds, 4 to 8 scenes, at 1080 x 1920. Landscape videos are 1920 x 1080.
 - The first scene hooks within 1.5 seconds: a bold claim, a question, or the result first.
 - One idea per scene, at most about 8 words on screen.
-- Scene length follows its voiceover line: about 2.5 words per second, plus 0.4 seconds of breathing room.
+- Scene length follows its voiceover line: the default voice speaks about 3 words per second (175 to 200 words per minute), plus 0.4 seconds of breathing room. When the voiceover exists, size scenes from its measured duration instead.
 - End on a clear call to action scene that holds for at least 2 seconds.
 
 ## 2. Voice before picture

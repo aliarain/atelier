@@ -1,6 +1,6 @@
 # Atelier
 
-A Command Code mod that turns the agent into a creative studio. Describe what you want, and it designs images, records voiceovers and cuts videos on your machine, checks each result with real measurements, and shows finished work in a live gallery.
+A Command Code mod that turns the agent into a creative studio. This is a private repository and the code is not licensed for reuse. Describe what you want, and it designs images, records voiceovers and cuts videos on your machine, checks each result with real measurements, and shows finished work in a live gallery.
 
 ## What it can make
 
@@ -53,19 +53,35 @@ Remove it with `cmd mods remove -g aliarain/atelier` (or the local path you inst
 
 `/atelier` opens the Atelier pane and the gallery. In the desktop app the gallery opens inside the workbench as a mod view; elsewhere it opens in your browser.
 
-The gallery shows every job as a tile and updates live. Filter buttons (All, Images, Videos, Audio) appear once there is more than one kind of work. Each tile has three actions: Variant asks the agent for another take on the same brief, Show in Finder reveals the output files, and Mark shown records the job as delivered.
+The gallery shows every job as a tile and updates live. Filter buttons (All, Images, Videos, Audio) appear once there is more than one kind of work. Each tile has three actions: Variant asks the agent for another take on the same brief, Show in Finder reveals the output files, and Mark shown records the job as delivered. A failed or stopped tile offers Variant only, which asks the agent to try the same brief again.
 
 ## In the chat
 
 In hosts that draw mod cards, `atelier_create` and `atelier_present` show up in the chat as cards instead of tool rows. While a piece renders you see what is being made and at what size. When it finishes you get a thumbnail, its size and length, a line of check results (all passed, or up to three issues in yellow or red) and an Open in gallery button. Delivered work appears as one card with your note and a large preview of each piece. Hosts without image support get the same card as plain text, and every other tool keeps its normal row. The thumbnails come from `preview.jpg`, which each render keeps in its job folder.
 
+## Paid engines
+
+`fal-image` calls a paid provider. By default every run asks first, with a prompt that names the engine and the model. To skip the prompt, which headless runs need because they cannot ask, set the `atelier-allow-paid` flag for that run:
+
+```bash
+cmd --mod-option atelier-allow-paid=true
+```
+
+The flag only removes the ordinary spend prompt. It never overrides the uncertain rule below.
+
+## Uncertain jobs
+
+Once a paid provider has accepted a request, any later failure, abort or crash ends the job as `uncertain` and not retryable, because the money may already be spent. For `fal-image` the job keeps the address of the generated image. Asking again with the same input fetches that image without paying a second time, and the old job is closed as recovered.
+
+While an uncertain job exists for an engine, `atelier_create` refuses a different paid run of that engine, even with `atelier-allow-paid`. The agent may pass `confirm_rerun: true` after you agreed, and you are then asked to confirm in the app. Headless runs cannot confirm, so they cannot re-run an uncertain job.
+
 ## Where things go
 
-Jobs and outputs live in the project under `.atelier/` (`jobs/<id>.json`, `out/<id>/`). A paid job interrupted mid-run becomes `uncertain` and is never re-run without asking.
+Jobs and outputs live in the project under `.atelier/` (`jobs/<id>.json`, `out/<id>/`). The first save adds `.atelier/.gitignore` with a single `*`, so media never shows up in `git status`.
 
 ## Develop
 
 ```bash
-pnpm test        # 220 tests, real Chrome, say and ffmpeg runs included
+pnpm test        # real Chrome, say and ffmpeg runs included
 pnpm typecheck   # needs a built Command Code checkout at ../commandcode
 ```
