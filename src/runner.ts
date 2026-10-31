@@ -42,7 +42,7 @@ function billedError(cause: JobError, billed: BilledResult | undefined): JobErro
 			: 'Run atelier_create again with the same input to fetch the result without paying again.';
 	return {
 		code: 'billed_incomplete',
-		message: `The provider already billed this run, but it did not finish: ${cause.message} ${next}`,
+		message: `The provider already billed this run, but it did not finish: ${cause.message.replace(/[.!?]?$/, '.')} ${next}`,
 		retryable: false,
 	};
 }

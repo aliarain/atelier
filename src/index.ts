@@ -151,8 +151,17 @@ export default function atelier(cmd: ModApi): void {
 	let galleryStart: Promise<GalleryHandle> | undefined;
 	let galleryView: {dispose(): void} | undefined;
 	const running = new Map<string, string>();
-	const token = cmd.state.get<string>(TOKEN_STATE) ?? randomBytes(16).toString('hex');
-	cmd.state.set(TOKEN_STATE, token);
+	// Hosts that predate cmd.state still run; they just lose the gallery across a hot reload.
+	const fallbackState = new Map<string, unknown>();
+	const kept = {
+		get: <T>(key: string): T | undefined => (cmd.state?.get<T>(key) ?? fallbackState.get(key)) as T | undefined,
+		set: (key: string, value: unknown): void => {
+			if (cmd.state === undefined) fallbackState.set(key, value);
+			else cmd.state.set(key, value);
+		},
+	};
+	const token = kept.get<string>(TOKEN_STATE) ?? randomBytes(16).toString('hex');
+	kept.set(TOKEN_STATE, token);
 	const now = (): number => Date.now();
 	const deps = {exec: execFileExec, env: process.env, fetch: globalThis.fetch};
 
@@ -196,7 +205,7 @@ export default function atelier(cmd: ModApi): void {
 	const ensureGallery = (): Promise<GalleryHandle> => {
 		galleryStart ??= startGallery({cwd: cmd.cwd, token, onAction: onGalleryAction}).then(
 			handle => {
-				cmd.state.set(GALLERY_STATE, handle);
+				kept.set(GALLERY_STATE, handle);
 				registerView(handle);
 				return handle;
 			},
@@ -218,10 +227,10 @@ export default function atelier(cmd: ModApi): void {
 	// A hot reload ends this code and starts new code in the same session. The server and its
 	// token live in cmd.state, so the new code adopts the running gallery.
 	const adoptGallery = (): void => {
-		const kept = cmd.state.get<GalleryHandle>(GALLERY_STATE);
-		if (kept === undefined || galleryStart !== undefined) return;
-		galleryStart = Promise.resolve(kept);
-		registerView(kept);
+		const live = kept.get<GalleryHandle>(GALLERY_STATE);
+		if (live === undefined || galleryStart !== undefined) return;
+		galleryStart = Promise.resolve(live);
+		registerView(live);
 	};
 
 	const closeGallery = async (): Promise<void> => {
@@ -229,7 +238,7 @@ export default function atelier(cmd: ModApi): void {
 		galleryView = undefined;
 		const start = galleryStart;
 		galleryStart = undefined;
-		cmd.state.set(GALLERY_STATE, undefined);
+		kept.set(GALLERY_STATE, undefined);
 		const handle = await start?.catch(() => undefined);
 		await handle?.close();
 	};
@@ -410,7 +419,7 @@ export default function atelier(cmd: ModApi): void {
 			const controller = new AbortController();
 			signal?.addEventListener('abort', () => controller.abort(), {once: true});
 			const started = new Set<string>();
-			const job = await runJob({
+			const outcome = await runJob({
 				cwd: cmd.cwd,
 				sessionId,
 				engine,
@@ -432,7 +441,9 @@ export default function atelier(cmd: ModApi): void {
 				// A save that throws must not leave the footer saying a dead job is still rendering.
 				for (const id of started) running.delete(id);
 				refreshStatus();
-			});
+			}).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
+			if (outcome instanceof Error) return {ok: false, error: `Could not run the job: ${outcome.message}`};
+			const job = outcome;
 			if (gate.kind === 'resume' && job.state === 'completed') {
 				await cancelUncertain([gate.job], {code: 'recovered', message: `Fetched by job ${job.id} without paying again.`, retryable: false});
 			}
@@ -509,7 +520,7 @@ export default function atelier(cmd: ModApi): void {
 		run: async ({input}): Promise<ToolOutcome> => {
 			const all = await loadJobs(cmd.cwd);
 			const scoped = input.scope === 'project' ? all : all.filter(job => job.sessionId === sessionId);
-			const limit = typeof input.limit === 'number' ? input.limit : 20;
+			const limit = typeof input.limit === 'number' && input.limit >= 1 ? Math.min(Math.floor(input.limit), 100) : 20;
 			return {ok: true, content: [json(scoped.slice(0, limit))]};
 		},
 	});

@@ -250,7 +250,8 @@ describe('running status', () => {
 		const {cwd, rec, create} = await project();
 		gate = Promise.resolve();
 		rec.throwOnNextNullStatus = true;
-		await assert.rejects(create({engine: 'slow', title: 'Stuck', input: {}}), /status failed/);
+		const result = await create({engine: 'slow', title: 'Stuck', input: {}});
+		assert.deepEqual([result.ok, result.error], [false, 'Could not run the job: status failed']);
 		assert.equal(rec.statuses.at(-1), null);
 		await rm(cwd, {recursive: true, force: true});
 	});
@@ -304,4 +305,27 @@ test('the review size is kept on the job for cards, and finishing time is not to
 	assert.deepEqual(job?.size, {width: 1, height: 1});
 	assert.equal(job?.state, 'completed');
 	await rm(cwd, {recursive: true, force: true});
+});
+
+test('atelier_jobs clamps a bad limit to a safe value', async () => {
+	const {cwd, rec} = await project();
+	for (const id of ['l1', 'l2', 'l3']) {
+		await saveJob(cwd, createJob({id, sessionId: 'S1', engine: 'design', title: id, input: {}, paid: false, ownerPid: process.pid, now: 5}));
+	}
+	const count = async (limit: unknown): Promise<number> => {
+		const result = await rec.tools.get('atelier_jobs')!.run({input: {limit}});
+		return (JSON.parse((result.content?.[0] as {text: string}).text) as unknown[]).length;
+	};
+	assert.deepEqual([await count(-2), await count(0), await count(2.5), await count('5'), await count(2)], [3, 3, 2, 3, 2]);
+	await rm(cwd, {recursive: true, force: true});
+});
+
+test('a project folder atelier cannot write to gives a tool error, not a throw', async () => {
+	const {cwd, create} = await project();
+	await rm(cwd, {recursive: true, force: true});
+	await writeFile(cwd, 'a file where the project folder should be');
+	const result = await create({engine: 'slow', title: 'Nowhere', input: {}});
+	assert.equal(result.ok, false);
+	assert.match(result.error ?? '', /^Could not run the job: /);
+	await rm(cwd, {force: true});
 });
