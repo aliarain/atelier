@@ -3,6 +3,7 @@ import {mkdir, mkdtemp, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {after, describe, test} from 'node:test';
+import {writeFile} from 'node:fs/promises';
 import {ENGINES} from '../src/engines/index.ts';
 import atelier from '../src/index.ts';
 import {createJob, jobsDir, loadJob, loadJobs, saveJob} from '../src/jobs.ts';
@@ -27,6 +28,10 @@ after(() => {
 
 let gate: Promise<void> = Promise.resolve();
 let release = (): void => {};
+const ONE_PIXEL_PNG = Buffer.from(
+	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+	'base64',
+);
 const slow: Engine = {
 	id: 'slow',
 	kind: 'image',
@@ -37,7 +42,9 @@ const slow: Engine = {
 	available: async () => ({ok: true}),
 	run: async ({ctx}) => {
 		await gate;
-		return [{path: join(ctx.outDir, 'a.png'), kind: 'image', bytes: 1}];
+		const path = join(ctx.outDir, 'a.png');
+		await writeFile(path, ONE_PIXEL_PNG);
+		return [{path, kind: 'image', bytes: ONE_PIXEL_PNG.length}];
 	},
 };
 (ENGINES as Engine[]).push(slow);
@@ -285,5 +292,16 @@ test('the job file of a finished run is readable as JSON', async () => {
 	await create({engine: 'slow', title: 'Done', input: {}});
 	const [job] = await loadJobs(cwd);
 	assert.equal(JSON.parse(await readFile(join(jobsDir(cwd), `${job!.id}.json`), 'utf8')).state, 'completed');
+	await rm(cwd, {recursive: true, force: true});
+});
+
+test('the review size is kept on the job for cards, and finishing time is not touched', async () => {
+	const {cwd, create} = await project();
+	gate = Promise.resolve();
+	const result = await create({engine: 'slow', title: 'Pixel', input: {}});
+	assert.equal(result.ok, true);
+	const [job] = await loadJobs(cwd);
+	assert.deepEqual(job?.size, {width: 1, height: 1});
+	assert.equal(job?.state, 'completed');
 	await rm(cwd, {recursive: true, force: true});
 });

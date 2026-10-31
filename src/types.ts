@@ -22,6 +22,11 @@ export interface JobError {
 	readonly retryable: boolean;
 }
 
+export interface Size {
+	readonly width: number;
+	readonly height: number;
+}
+
 // What a paid provider already made for a run it billed, so a retry can fetch it without paying
 // again.
 export interface BilledResult {
@@ -40,6 +45,8 @@ export interface Job {
 	// When the owning process started, so a recycled pid is not mistaken for the owner.
 	readonly ownerStartedAt?: number;
 	readonly billedResult?: BilledResult;
+	// The pixel size the review measured on the first output, kept so cards show real sizes.
+	readonly size?: Size;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 	readonly outputs: readonly MediaOutput[];

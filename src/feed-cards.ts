@@ -1,5 +1,5 @@
-import {plainTitle} from './policy.ts';
-import type {Job} from './types.ts';
+import {plainNote, plainTitle} from './policy.ts';
+import type {Job, Size} from './types.ts';
 
 interface TextNode {
 	readonly type: 'text';
@@ -63,27 +63,33 @@ export interface ToolRowProps {
 
 const PRESENT_LIMIT = 4;
 const CHIP_LIMIT = 3;
+const CHIP_CHARS = 40;
 const ERROR_CHARS = 140;
 const PORTRAIT_THUMB = {width: 64, height: 80};
 const LANDSCAPE_THUMB = {width: 112, height: 80};
 const PIECE_IMAGE = {width: 180, height: 225};
 
-const CHECK_LABELS: Readonly<Record<string, string>> = {
+// What the layout check measured about the page, named for what it found.
+const LAYOUT_LABELS: Readonly<Record<string, string>> = {
 	clipped_text: 'Clipped text',
 	off_canvas: 'Text off canvas',
 	overlap: 'Overlapping text',
 	safe_area: 'Text in unsafe area',
 	tight_edge: 'Text tight to edge',
+};
+
+// Fallback when a review check has no detail: name the thing measured, never a verdict on it.
+const REVIEW_LABELS: Readonly<Record<string, string>> = {
 	black_frames: 'Black frames',
 	frozen_frames: 'Frozen frames',
 	silence: 'Silence',
 	loudness: 'Loudness',
-	true_peak: 'Clipping peaks',
-	blank: 'Blank render',
-	dimensions: 'Small size',
-	resolution: 'Low resolution',
-	audio_present: 'No audio',
-	duration: 'Too short',
+	true_peak: 'Peaks',
+	blank: 'Brightness',
+	dimensions: 'Image size',
+	resolution: 'Frame size',
+	audio_present: 'Audio track',
+	duration: 'Duration',
 };
 
 type JsonObject = Readonly<Record<string, unknown>>;
@@ -122,15 +128,24 @@ function parseJson(text: string | undefined): JsonObject | undefined {
 	}
 }
 
-function sizeOf(input: unknown): {readonly width: number; readonly height: number} | undefined {
+function sizeOf(input: unknown): Size | undefined {
 	const record = asRecord(input);
 	const width = asNumber(record?.width);
 	const height = asNumber(record?.height);
 	return width !== undefined && height !== undefined ? {width, height} : undefined;
 }
 
-const sizeLabel = (size: {readonly width: number; readonly height: number}): string =>
-	`${size.width} × ${size.height}`;
+// A design renders at its width and height times its scale, so the input alone understates a 2x.
+function outputSizeOf(input: unknown): Size | undefined {
+	const size = sizeOf(input);
+	if (size === undefined) return undefined;
+	const scale = asNumber(asRecord(input)?.scale) ?? 1;
+	return {width: Math.round(size.width * scale), height: Math.round(size.height * scale)};
+}
+
+const sizeLabel = (size: Size): string => `${size.width} × ${size.height}`;
+
+const firstLine = (text: string): string => text.split('\n')[0]?.trim() ?? '';
 
 function hasElements(capabilities: readonly string[], names: readonly string[]): boolean {
 	return names.every(name => capabilities.includes(name));
@@ -149,11 +164,18 @@ function headline(params: {
 
 const dim = (text: string): FeedNode => ({type: 'text', text, dim: true});
 
-function labelOf(id: string): string {
-	const known = CHECK_LABELS[id];
-	if (known !== undefined) return known;
-	const spaced = id.replace(/_/g, ' ');
-	return `${spaced.charAt(0).toUpperCase()}${spaced.slice(1)}`;
+function spaced(id: string): string {
+	const text = id.replace(/_/g, ' ');
+	return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+}
+
+// A check's own words are the only claim about the file that is certainly true, so the chip
+// uses the first clause of its detail, cut to a chip's width.
+function chipText(detail: string): string {
+	const clause = detail.split(/[,;:]/)[0]?.trim() ?? '';
+	const text = clause === '' ? detail.trim() : clause;
+	const cut = text.length <= CHIP_CHARS ? text : `${text.slice(0, CHIP_CHARS - 1).replace(/\s+\S*$/, '')}…`;
+	return `${cut.charAt(0).toUpperCase()}${cut.slice(1)}`;
 }
 
 interface Chip {
@@ -167,11 +189,13 @@ function chipsOf(review: JsonObject | undefined, layout: JsonObject | undefined)
 		const record = asRecord(issue);
 		const id = asString(record?.id);
 		if (id === undefined) return [];
-		return [{label: labelOf(id), color: record?.status === 'fail' ? 'red' : 'yellow'}];
+		const detail = asString(record?.detail);
+		const label = detail === undefined ? (REVIEW_LABELS[id] ?? spaced(id)) : chipText(detail);
+		return [{label, color: record?.status === 'fail' ? 'red' : 'yellow'}];
 	});
 	const layouts = asArray(layout?.issues).flatMap((issue): readonly Chip[] => {
 		const kind = asString(asRecord(issue)?.kind);
-		return kind === undefined ? [] : [{label: labelOf(kind), color: 'yellow'}];
+		return kind === undefined ? [] : [{label: LAYOUT_LABELS[kind] ?? spaced(kind), color: 'yellow'}];
 	});
 	const ordered = [...checks.filter(c => c.color === 'red'), ...checks.filter(c => c.color === 'yellow'), ...layouts];
 	const seen = new Set<string>();
@@ -182,13 +206,19 @@ function chipsOf(review: JsonObject | undefined, layout: JsonObject | undefined)
 	});
 }
 
-function chipRow(review: JsonObject | undefined, layout: JsonObject | undefined): FeedNode {
+// "All checks passed" is a claim about every check that exists for the piece. A design also has
+// a layout check, and when it did not run the card says so instead.
+function chipRow(params: {
+	readonly review: JsonObject | undefined;
+	readonly layout: JsonObject | undefined;
+	readonly expectLayout: boolean;
+}): FeedNode {
+	const {review, layout, expectLayout} = params;
 	const chips = chipsOf(review, layout);
 	if (chips.length === 0) {
-		const verdict = review?.verdict;
-		return verdict === 'pass'
-			? {type: 'row', children: [{type: 'text', text: 'All checks passed', color: 'green'}]}
-			: {type: 'row', children: [dim('Review unavailable')]};
+		if (review?.verdict !== 'pass') return {type: 'row', children: [dim('Review unavailable')]};
+		if (expectLayout && layout === undefined) return {type: 'row', children: [dim('Layout not checked')]};
+		return {type: 'row', children: [{type: 'text', text: 'All checks passed', color: 'green'}]};
 	}
 	const shown: readonly FeedNode[] = chips
 		.slice(0, CHIP_LIMIT)
@@ -200,18 +230,27 @@ function chipRow(review: JsonObject | undefined, layout: JsonObject | undefined)
 function pendingCard(input: JsonObject | undefined, capabilities: readonly string[]): readonly FeedNode[] {
 	const engine = asString(input?.engine) ?? 'media';
 	const title = plainTitle(input?.title, engine);
-	const size = sizeOf(asRecord(input?.input));
+	const size = outputSizeOf(asRecord(input?.input));
 	const meta = engine === 'voice' ? 'voiceover' : [engine, size ? sizeLabel(size) : undefined].filter(Boolean).join(' · ');
 	const body = [headline({state: 'running', text: `Making ${title}`, capabilities}), dim(meta)];
 	return hasElements(capabilities, ['stack']) ? [{type: 'stack', direction: 'column', children: body}] : body;
 }
 
-function errorCard(input: JsonObject | undefined, result: readonly unknown[] | undefined, capabilities: readonly string[]): readonly FeedNode[] {
+const JOB_FAILURE = /^Job \S+ (failed|uncertain|cancelled): ([\s\S]*)$/;
+
+// The model reads the whole failure; the card has room for its first line.
+function errorCard(input: JsonObject | undefined, result: readonly unknown[] | undefined, deps: FeedCardDeps): readonly FeedNode[] {
+	const {capabilities} = deps;
 	const title = plainTitle(input?.title, asString(input?.engine) ?? 'media');
-	const message = firstText(result)?.trim().slice(0, ERROR_CHARS);
+	const text = firstText(result)?.trim() ?? '';
+	const failure = JOB_FAILURE.exec(text);
+	const state = failure?.[1];
+	const message = firstLine(failure?.[2] ?? text).slice(0, ERROR_CHARS);
+	const headlineText = state === 'cancelled' ? `Stopped ${title}` : state === 'uncertain' ? `Could not finish ${title}` : `Could not make ${title}`;
 	const body: readonly FeedNode[] = [
-		headline({state: 'error', text: `Could not make ${title}`, capabilities}),
-		...(message ? [dim(message)] : []),
+		headline({state: 'error', text: headlineText, capabilities}),
+		...(message && state !== 'cancelled' ? [dim(message)] : []),
+		{type: 'button', label: 'Open in gallery', onPress: deps.openGallery},
 	];
 	return hasElements(capabilities, ['stack']) ? [{type: 'stack', direction: 'column', children: body}] : body;
 }
@@ -229,7 +268,7 @@ function successCard(params: {
 	const output = asRecord(asArray(parsed?.outputs)[0]);
 	const review = asRecord(asArray(parsed?.reviews)[0]);
 	const probe = asRecord(review?.probe);
-	const size = sizeOf(probe) ?? sizeOf(asRecord(input?.input));
+	const size = sizeOf(probe) ?? outputSizeOf(asRecord(input?.input));
 	const durationS = asNumber(probe?.durationS);
 	const meta = [engine, size ? sizeLabel(size) : undefined, durationS ? `${Number(durationS.toFixed(1))}s` : undefined]
 		.filter(Boolean)
@@ -237,7 +276,9 @@ function successCard(params: {
 	const body: readonly FeedNode[] = [
 		headline({state: 'done', text: title, capabilities}),
 		dim(meta),
-		...(review === undefined && parsed === undefined ? [] : [chipRow(review, asRecord(asArray(parsed?.layout)[0]))]),
+		...(review === undefined && parsed === undefined
+			? []
+			: [chipRow({review, layout: asRecord(asArray(parsed?.layout)[0]), expectLayout: engine === 'design'})]),
 		{type: 'button', label: 'Open in gallery', onPress: deps.openGallery},
 	];
 	if (!hasElements(capabilities, ['image', 'stack'])) return body;
@@ -264,10 +305,8 @@ interface Piece {
 	readonly src: string | undefined;
 }
 
-function pieceOf(jobId: string, deps: FeedCardDeps): Piece | undefined {
-	const job = deps.readJob(jobId);
-	if (job === undefined) return undefined;
-	const size = sizeOf(job.input);
+function pieceOf(jobId: string, job: Job, deps: FeedCardDeps): Piece {
+	const size = job.size ?? outputSizeOf(job.input);
 	return {
 		title: plainTitle(job.title, job.engine),
 		size: size ? sizeLabel(size) : undefined,
@@ -275,24 +314,29 @@ function pieceOf(jobId: string, deps: FeedCardDeps): Piece | undefined {
 	};
 }
 
-function deliveredCard(input: JsonObject | undefined, deps: FeedCardDeps): readonly FeedNode[] {
-	const ids = asArray(input?.job_ids).filter((id): id is string => typeof id === 'string');
-	const note = asString(input?.note);
+// Counts the distinct pieces that really loaded, shows the first few, and says how many more.
+function deliveredCard(input: JsonObject | undefined, deps: FeedCardDeps): readonly FeedNode[] | undefined {
+	const ids = [...new Set(asArray(input?.job_ids).filter((id): id is string => typeof id === 'string'))];
+	const loaded = ids.flatMap((id): readonly {readonly id: string; readonly job: Job}[] => {
+		const job = deps.readJob(id);
+		return job === undefined ? [] : [{id, job}];
+	});
+	if (loaded.length === 0) return undefined;
+	const note = plainNote(input?.note);
+	const hidden = loaded.length - PRESENT_LIMIT;
+	const more: readonly FeedNode[] = hidden > 0 ? [dim(`+${hidden} more`)] : [];
 	const header: FeedNode = {
 		type: 'row',
 		children: [
 			{type: 'text', text: 'Delivered', bold: true},
-			dim(ids.length === 1 ? '1 piece' : `${ids.length} pieces`),
+			dim(loaded.length === 1 ? '1 piece' : `${loaded.length} pieces`),
 		],
 	};
-	const pieces = ids
-		.slice(0, PRESENT_LIMIT)
-		.map(id => pieceOf(id, deps))
-		.filter((piece): piece is Piece => piece !== undefined);
-	const intro: readonly FeedNode[] = [header, ...(note ? [{type: 'text', text: note} satisfies FeedNode] : [])];
+	const pieces = loaded.slice(0, PRESENT_LIMIT).map(({id, job}) => pieceOf(id, job, deps));
+	const intro: readonly FeedNode[] = [header, ...(note === '' ? [] : [{type: 'text', text: note} satisfies FeedNode])];
 
 	if (!hasElements(deps.capabilities, ['image', 'stack'])) {
-		return [...intro, ...pieces.map(piece => dim([piece.title, piece.size].filter(Boolean).join(' · ')))];
+		return [...intro, ...pieces.map(piece => dim([piece.title, piece.size].filter(Boolean).join(' · '))), ...more];
 	}
 	const columns: readonly FeedNode[] = pieces.map(piece => ({
 		type: 'stack',
@@ -307,7 +351,7 @@ function deliveredCard(input: JsonObject | undefined, deps: FeedCardDeps): reado
 			},
 		],
 	}));
-	return [{type: 'stack', direction: 'column', children: [...intro, {type: 'stack', direction: 'row', align: 'start', children: columns}]}];
+	return [{type: 'stack', direction: 'column', children: [...intro, {type: 'stack', direction: 'row', align: 'start', children: columns}, ...more]}];
 }
 
 // undefined keeps the host's built-in row. The host calls this synchronously on every repaint,
@@ -316,7 +360,7 @@ export function toolRowCard(props: ToolRowProps, deps: FeedCardDeps): readonly F
 	const input = asRecord(props.input);
 	if (props.toolName === 'atelier_create') {
 		if (props.status === 'pending') return pendingCard(input, deps.capabilities);
-		if (props.status === 'error') return errorCard(input, props.result, deps.capabilities);
+		if (props.status === 'error') return errorCard(input, props.result, deps);
 		return successCard({input, result: props.result, deps});
 	}
 	if (props.toolName === 'atelier_present' && props.status === 'success') return deliveredCard(input, deps);

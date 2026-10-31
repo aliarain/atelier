@@ -444,6 +444,10 @@ export default function atelier(cmd: ModApi): void {
 				job.outputs.map(output => reviewMedia({path: output.path, exec: execFileExec, ...stillVideoFlag(job)}).catch(() => undefined)),
 			);
 			const layouts = await Promise.all(job.outputs.map(output => layoutReport(output.path)));
+			const probe = reviews[0]?.probe;
+			if (probe?.width !== undefined && probe.height !== undefined) {
+				await saveJob(cmd.cwd, {...job, size: {width: probe.width, height: probe.height}});
+			}
 			const first = job.outputs[0];
 			const preview = first
 				? await previewOf({output: first, exec: execFileExec, durationS: reviews[0]?.probe.durationS})

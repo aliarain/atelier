@@ -49,6 +49,7 @@ const CLEAN = {
 	state: 'completed',
 	outputs: [{path: '/x/design.png', kind: 'image', bytes: 10}],
 	reviews: [{verdict: 'pass', probe: {kind: 'image', width: 1080, height: 1920, hasAudio: false, bytes: 10}, issues: []}],
+	layout: [{checked: 3, issues: []}],
 };
 
 test('a pending create is a running status and a dim engine and size line', () => {
@@ -83,7 +84,7 @@ test('a finished create with an unsafe-area warning shows a portrait thumbnail a
 	const probe = {kind: 'image', width: 1080, height: 1920, durationS: 4, hasAudio: false, bytes: 10};
 	const result = {
 		...CLEAN,
-		reviews: [{verdict: 'warn', probe, issues: [{id: 'blank', status: 'warn', detail: 'x'}]}],
+		reviews: [{verdict: 'warn', probe, issues: [{id: 'blank', status: 'warn', detail: 'brightness spans 2 of 255'}]}],
 		layout: [{checked: 3, issues: [{kind: 'safe_area', text: '09', rect: {x: 0, y: 0, w: 1, h: 1}}]}],
 	};
 	const nodes = toolRowCard(created(result), depsOf());
@@ -103,7 +104,7 @@ test('a finished create with an unsafe-area warning shows a portrait thumbnail a
 						{
 							type: 'row',
 							children: [
-								{type: 'text', text: 'Blank render', color: 'yellow'},
+								{type: 'text', text: 'Brightness spans 2 of 255', color: 'yellow'},
 								{type: 'text', text: 'Text in unsafe area', color: 'yellow'},
 							],
 						},
@@ -128,7 +129,7 @@ test('failures sort before warnings, repeats collapse, and the rest becomes a co
 	assert.deepEqual(chips, {
 		type: 'row',
 		children: [
-			{type: 'text', text: 'Clipping peaks', color: 'red'},
+			{type: 'text', text: 'Peaks', color: 'red'},
 			{type: 'text', text: 'Silence', color: 'yellow'},
 			{type: 'text', text: 'Loudness', color: 'yellow'},
 			{type: 'text', text: '+1 more', dim: true},
@@ -169,12 +170,12 @@ test('a video gets the play badge and a landscape frame follows the probed size'
 	});
 });
 
-test('an error shows what failed and no button', () => {
+test('an error shows the first line of what failed and a way into the gallery', () => {
 	const props = {
 		toolName: 'atelier_create',
 		status: 'error' as const,
 		input: {engine: 'design', title: 'Poster', input: {}},
-		result: [{type: 'text', text: `Job j9 failed: ${'x'.repeat(200)}`}],
+		result: [{type: 'text', text: `Job j9 failed: ${'x'.repeat(200)}\nat render (a.ts:1)\nat run (b.ts:2)`}],
 	};
 	assert.deepEqual(toolRowCard(props, depsOf()), [
 		{
@@ -182,7 +183,8 @@ test('an error shows what failed and no button', () => {
 			direction: 'column',
 			children: [
 				{type: 'status', state: 'error', text: 'Could not make Poster'},
-				{type: 'text', text: `Job j9 failed: ${'x'.repeat(125)}`, dim: true},
+				{type: 'text', text: 'x'.repeat(140), dim: true},
+				{type: 'button', label: 'Open in gallery', onPress: openGallery},
 			],
 		},
 	]);
@@ -322,4 +324,101 @@ test('an oversized or missing preview leaves the text column without an image', 
 	assert.equal(nodes?.[0]?.type, 'stack');
 	assert.equal(JSON.stringify(nodes).includes('"image"'), false);
 	assert.equal((nodes?.[0] as {direction: string}).direction, 'column');
+});
+
+const cardOf = (nodes: ReturnType<typeof toolRowCard>): string => JSON.stringify(nodes);
+
+test('a cancelled run reads Stopped, not Could not make, and still offers the gallery', () => {
+	const props = {
+		toolName: 'atelier_create',
+		status: 'error' as const,
+		input: {engine: 'voice', title: 'VO'},
+		result: [{type: 'text', text: 'Job mvwk-abc cancelled: The run was stopped.'}],
+	};
+	assert.deepEqual(toolRowCard(props, depsOf()), [
+		{
+			type: 'stack',
+			direction: 'column',
+			children: [
+				{type: 'status', state: 'error', text: 'Stopped VO'},
+				{type: 'button', label: 'Open in gallery', onPress: openGallery},
+			],
+		},
+	]);
+});
+
+test('an uncertain run does not claim it could not be made', () => {
+	const props = {
+		toolName: 'atelier_create',
+		status: 'error' as const,
+		input: {engine: 'fal-image', title: 'Fox'},
+		result: [{type: 'text', text: 'Job j1 uncertain: The provider already billed this run, but it did not finish: network.'}],
+	};
+	assert.match(cardOf(toolRowCard(props, depsOf())), /"text":"Could not finish Fox"/);
+});
+
+test('a pending design shows the pixels it will have, scale included', () => {
+	const props = {toolName: 'atelier_create', status: 'pending' as const, input: {engine: 'design', title: 'P', input: {width: 1080, height: 1350, scale: 2}}};
+	assert.match(cardOf(toolRowCard(props, depsOf())), /design · 2160 × 2700/);
+	const unscaled = {...props, input: {engine: 'motion', title: 'M', input: {width: 1080, height: 1920}}};
+	assert.match(cardOf(toolRowCard(unscaled, depsOf())), /motion · 1080 × 1920/);
+});
+
+test('a delivered piece prefers the reviewed size, then input times scale, then shows none', () => {
+	const jobs: Readonly<Record<string, Job>> = {
+		reviewed: job({id: 'reviewed', input: {width: 1080, height: 1350, scale: 2}, size: {width: 2160, height: 2700}}),
+		scaled: job({id: 'scaled', input: {width: 1080, height: 1350, scale: 2}}),
+		bare: job({id: 'bare', input: {}}),
+	};
+	const props = {toolName: 'atelier_present', status: 'success' as const, input: {job_ids: ['reviewed', 'scaled', 'bare'], note: 'n'}};
+	const flat = cardOf(toolRowCard(props, depsOf({capabilities: ['status'], readJob: id => jobs[id]})));
+	assert.match(flat, /Night Bloom story v3 · 2160 × 2700/);
+	assert.equal(flat.match(/2160 × 2700/g)?.length, 2);
+	assert.match(flat, /"text":"Night Bloom story v3","dim":true/);
+});
+
+test('the delivered note is cleaned like a title', () => {
+	const props = {toolName: 'atelier_present', status: 'success' as const, input: {job_ids: ['a'], note: 'Ember &amp; Oak \u2014 final'}};
+	assert.match(cardOf(toolRowCard(props, depsOf({capabilities: ['status'], readJob: () => job({})}))), /"text":"Ember & Oak: final"/);
+});
+
+test('delivered counts distinct pieces that loaded and says how many more', () => {
+	const known = new Set(['a', 'b', 'c', 'd', 'e', 'f']);
+	const readJob = (id: string): Job | undefined => (known.has(id) ? job({id}) : undefined);
+	const ids = ['a', 'a', 'b', 'c', 'd', 'e', 'f', 'ghost'];
+	const nodes = toolRowCard({toolName: 'atelier_present', status: 'success', input: {job_ids: ids, note: 'n'}}, depsOf({readJob}));
+	const outer = nodes?.[0];
+	const children = outer && 'children' in outer ? outer.children : [];
+	assert.deepEqual(children[0], {type: 'row', children: [{type: 'text', text: 'Delivered', bold: true}, {type: 'text', text: '6 pieces', dim: true}]});
+	assert.equal(children[2] && 'children' in children[2] ? children[2].children.length : 0, 4);
+	assert.deepEqual(children[3], {type: 'text', text: '+2 more', dim: true});
+});
+
+test('a present whose jobs cannot be read keeps the built-in row', () => {
+	const props = {toolName: 'atelier_present', status: 'success' as const, input: {job_ids: ['ghost'], note: 'n'}};
+	assert.equal(toolRowCard(props, depsOf({readJob: () => undefined})), undefined);
+});
+
+test('a chip uses the check\'s own first clause, capitalized and cut to 40 characters', () => {
+	const issues = [
+		{id: 'duration', status: 'fail', detail: 'the file reports no duration'},
+		{id: 'true_peak', status: 'fail', detail: 'no true peak could be measured, the audio may be silent'},
+		{id: 'resolution', status: 'warn', detail: 'a very long description of the frame size problem that goes on'},
+	];
+	const nodes = toolRowCard(created({...CLEAN, reviews: [{verdict: 'fail', probe: {}, issues}]}), depsOf({capabilities: ['status']}));
+	assert.deepEqual(nodes?.[2], {
+		type: 'row',
+		children: [
+			{type: 'text', text: 'The file reports no duration', color: 'red'},
+			{type: 'text', text: 'No true peak could be measured', color: 'red'},
+			{type: 'text', text: 'A very long description of the frame…', color: 'yellow'},
+		],
+	});
+});
+
+test('a design review with no layout check says Layout not checked, not All checks passed', () => {
+	const { layout: _layout, ...noLayout } = CLEAN;
+	const flat = cardOf(toolRowCard(created(noLayout), depsOf()));
+	assert.match(flat, /"text":"Layout not checked","dim":true/);
+	assert.doesNotMatch(flat, /All checks passed/);
 });
