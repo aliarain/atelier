@@ -79,8 +79,9 @@ export async function runJob(params: RunJobParams): Promise<Job> {
 
 	// Mutated by the engine's markBilled callback, so it lives in an object, not a narrowed let.
 	const billing: {billed: boolean; result: BilledResult | undefined} = {billed: false, result: undefined};
+	let outputs: readonly MediaOutput[];
 	try {
-		const outputs = await engine.run({
+		outputs = await engine.run({
 			input: params.input,
 			ctx: {
 				outDir,
@@ -96,8 +97,6 @@ export async function runJob(params: RunJobParams): Promise<Job> {
 				...(params.resume === undefined ? {} : {resume: params.resume}),
 			},
 		});
-		const done = moveJob(running, {state: 'completed', outputs}, now());
-		return done.ok ? commit(params, done.job) : running;
 	} catch (error) {
 		const aborted = params.signal.aborted;
 		if (billing.billed) {
@@ -113,6 +112,10 @@ export async function runJob(params: RunJobParams): Promise<Job> {
 		const failed = moveJob(running, {state, error: errorOf(error, aborted)}, now());
 		return failed.ok ? commit(params, failed.job) : running;
 	}
+	// Outside the try: the outputs exist, so a save that fails here is a save error to report,
+	// never an engine failure (which would wrongly call a finished paid run uncertain).
+	const done = moveJob(running, {state: 'completed', outputs}, now());
+	return done.ok ? commit(params, done.job) : running;
 }
 
 const PREVIEW_EDGE = 768;
@@ -143,11 +146,13 @@ export async function previewOf(params: {
 			'-i',
 			output.path,
 			'-vf',
-			`scale='min(${PREVIEW_EDGE},iw)':-2`,
+			// Fit inside a square box: a width-only cap left tall renders huge for the model.
+			`scale='min(${PREVIEW_EDGE},iw)':'min(${PREVIEW_EDGE},ih)':force_original_aspect_ratio=decrease`,
 			'-frames:v',
 			'1',
 			'-q:v',
-			'4',
+			// q 6 keeps a busy 768 px frame well under the chat card's inline limit.
+			'6',
 			target,
 		],
 		timeoutMs: 30_000,
@@ -160,13 +165,28 @@ export async function previewOf(params: {
 	return bytes?.toString('base64');
 }
 
+// Feed cards repaint often; each preview is read and encoded once per file version.
+const PREVIEW_CACHE_LIMIT = 200;
+const previewCache = new Map<string, {readonly mtimeMs: number; readonly url: string | undefined}>();
+
 // Sync because a mod element override has to answer without awaiting.
 export function readPreviewDataUrl(cwd: string, jobId: string): string | undefined {
 	if (!JOB_ID.test(jobId)) return undefined;
 	const path = join(outputDir(cwd, jobId), PREVIEW_FILE);
 	try {
-		if (statSync(path).size > PREVIEW_CARD_MAX_BYTES) return undefined;
-		return `data:image/jpeg;base64,${readFileSync(path).toString('base64')}`;
+		const info = statSync(path);
+		const cached = previewCache.get(path);
+		if (cached?.mtimeMs === info.mtimeMs) return cached.url;
+		const url =
+			info.size > PREVIEW_CARD_MAX_BYTES
+				? undefined
+				: `data:image/jpeg;base64,${readFileSync(path).toString('base64')}`;
+		if (previewCache.size >= PREVIEW_CACHE_LIMIT) {
+			const oldest = previewCache.keys().next().value;
+			if (oldest !== undefined) previewCache.delete(oldest);
+		}
+		previewCache.set(path, {mtimeMs: info.mtimeMs, url});
+		return url;
 	} catch {
 		return undefined;
 	}

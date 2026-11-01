@@ -1,4 +1,5 @@
 import {isAbsolute, join, resolve, sep} from 'node:path';
+import {mediaKindOf} from './exec.ts';
 import {outputDir} from './jobs.ts';
 
 const GLOB_CHARS = /[*?[\]{}]/;
@@ -12,12 +13,24 @@ function pathsOf(input: Readonly<Record<string, unknown>>): readonly string[] {
 	return [...single, ...many];
 }
 
-// A glob reaches into a folder when the fixed text before its first wildcard and the folder lie
-// on one path, in either direction.
+// A glob reaches into a job folder when it starts inside it, or starts above it and can descend
+// that deep (a `**`, or enough path segments) to a file that could be media. A leading `*.md`
+// or `**/*.ts` stays out of the way of a render.
 function globReaches(pattern: string, cwd: string, folder: string): boolean {
+	const lastSegment = pattern.split('/').pop() ?? '';
+	const extension = /\.([A-Za-z0-9]+)$/.exec(lastSegment)?.[1];
+	if (extension !== undefined && !GLOB_CHARS.test(extension) && mediaKindOf(`x.${extension}`) === undefined) {
+		return false;
+	}
 	const literal = pattern.slice(0, pattern.search(GLOB_CHARS));
-	const prefix = isAbsolute(literal) ? join(literal) : join(cwd, literal);
-	return folder.startsWith(prefix) || prefix.startsWith(folder);
+	const base = literal.slice(0, literal.lastIndexOf('/') + 1);
+	const prefix = `${isAbsolute(base) ? join(base) : join(cwd, base)}${sep}`.replace(/[\\/]+$/, sep);
+	if (prefix.startsWith(folder)) return true;
+	if (!folder.startsWith(prefix)) return false;
+	const rest = pattern.slice(base.length);
+	if (rest.includes('**')) return true;
+	const depth = folder.slice(prefix.length).split(sep).filter(Boolean).length;
+	return rest.split('/').filter(Boolean).length > depth;
 }
 
 // True when a read_file call would open something inside a job folder that is still being

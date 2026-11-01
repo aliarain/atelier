@@ -174,12 +174,16 @@ export async function isOwnerAlive(
 }
 
 const GITIGNORE = '*\n';
+const ignoredProjects = new Set<string>();
 
 export async function saveJob(cwd: string, job: Job): Promise<void> {
 	const dir = jobsDir(cwd);
 	await mkdir(dir, {recursive: true});
 	// Media and job files are local work product; the first save keeps them out of git status.
-	await writeFile(join(atelierDir(cwd), '.gitignore'), GITIGNORE, {flag: 'wx'}).catch(() => undefined);
+	if (!ignoredProjects.has(cwd)) {
+		await writeFile(join(atelierDir(cwd), '.gitignore'), GITIGNORE, {flag: 'wx'}).catch(() => undefined);
+		ignoredProjects.add(cwd);
+	}
 	const tmp = join(dir, `${job.id}.json.${process.pid}.${randomBytes(4).toString('hex')}.tmp`);
 	await writeFile(tmp, `${JSON.stringify(job, null, '\t')}\n`);
 	await rename(tmp, join(dir, `${job.id}.json`));

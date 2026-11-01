@@ -457,7 +457,9 @@ export default function atelier(cmd: ModApi): void {
 			const layouts = await Promise.all(job.outputs.map(output => layoutReport(output.path)));
 			const probe = reviews[0]?.probe;
 			if (probe?.width !== undefined && probe.height !== undefined) {
-				await saveJob(cmd.cwd, {...job, size: {width: probe.width, height: probe.height}});
+				// Re-read first: the gallery may have marked it shown while the review ran.
+				const latest = (await loadJob(cmd.cwd, job.id)) ?? job;
+				await saveJob(cmd.cwd, {...latest, size: {width: probe.width, height: probe.height}});
 			}
 			const first = job.outputs[0];
 			const preview = first

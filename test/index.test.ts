@@ -238,7 +238,11 @@ describe('running status', () => {
 		const {cwd, rec, create} = await project();
 		gate = new Promise<void>(resolve => { release = resolve; });
 		const pending = create({engine: 'slow', title: 'Night Bloom', input: {}});
-		await new Promise(resolve => setTimeout(resolve, 100));
+		// Wait for the status rather than a fixed delay: under a busy suite the job can take
+		// longer than any small sleep to reach running.
+		for (let waited = 0; rec.statuses.at(-1) !== 'Making Night Bloom' && waited < 5000; waited += 20) {
+			await new Promise(resolve => setTimeout(resolve, 20));
+		}
 		assert.equal(rec.statuses.at(-1), 'Making Night Bloom');
 		release();
 		await pending;
