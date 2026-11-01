@@ -1,0 +1,93 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+@font-face { font-family: Geist; src: url("file:///Users/aliarain/Documents/Projects/commandcode/.claude/worktrees/voyager-rea-review-998e00/node_modules/.pnpm/@fontsource-variable+geist@5.3.0/node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; }
+:root { --bg:#2D2B55; --card:#222244; --popover:#1E1E3F; --deep:#161633; --fg:#FFFFFF; --muted:#A599E9; --accent:#FAD000; --line:rgba(165,153,233,.11); --line2:rgba(165,153,233,.22); --info:#9EFFFF; --success:#3AD900; --warning:#FAD000; }
+* { box-sizing:border-box; margin:0; }
+html,body { width:1000px; height:1250px; overflow:hidden; background:var(--bg); color:var(--fg); font-family:Geist,system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
+.col { width:760px; margin:0 auto; padding:34px 0; display:flex; flex-direction:column; gap:16px; }
+.label { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); opacity:.75; margin-top:6px; }
+.prose { font-size:15px; line-height:1.6; color:#EDEAFF; }
+.row { display:flex; align-items:center; gap:8px; font-size:13.5px; color:var(--muted); }
+.row svg { width:15px; height:15px; stroke:currentColor; fill:none; stroke-width:1.6; }
+/* Tool row drawn by the mod's tool_row override with native elements */
+.job { display:flex; gap:12px; padding:10px; border:1px solid var(--line); border-radius:10px; background:var(--card); user-select:none; }
+.thumb { flex:none; width:64px; height:80px; border-radius:7px; background:var(--deep); overflow:hidden; position:relative; }
+.thumb img { width:100%; height:100%; object-fit:cover; display:block; }
+.thumb.wide { width:112px; height:80px; }
+.thumb.pending { background:linear-gradient(110deg,#1b1b3a 30%,#26264d 50%,#1b1b3a 70%); }
+.play { position:absolute; inset:auto 6px 6px auto; width:20px; height:20px; border-radius:6px; background:rgba(22,22,51,.85); display:grid; place-items:center; }
+.play svg { width:9px; height:9px; fill:#fff; }
+.body { min-width:0; flex:1; display:flex; flex-direction:column; justify-content:center; gap:5px; }
+.title { display:flex; align-items:center; gap:8px; font-size:13.5px; font-weight:500; }
+.title .verb { color:var(--muted); font-weight:400; }
+.meta { font-size:12.5px; color:var(--muted); }
+.checks { display:flex; gap:6px; flex-wrap:wrap; }
+.chip { font-size:12px; padding:2px 8px; border-radius:6px; border:1px solid var(--line2); color:#DCD6FF; display:inline-flex; align-items:center; gap:5px; }
+.chip svg { width:11px; height:11px; stroke:currentColor; fill:none; stroke-width:2; }
+.chip.ok svg { color:var(--success); }
+.chip.warn svg { color:var(--warning); }
+.spinner { width:13px; height:13px; border-radius:50%; border:1.6px solid rgba(158,255,255,.25); border-top-color:var(--info); flex:none; }
+.check { width:14px; height:14px; color:var(--muted); flex:none; }
+.check path { stroke:currentColor; fill:none; stroke-width:2; }
+.actions { margin-left:auto; align-self:center; }
+.btn { height:28px; padding:0 11px; border-radius:7px; font-size:12.5px; border:1px solid var(--line2); background:var(--bg); color:var(--fg); display:inline-flex; align-items:center; }
+/* Deliverable: atelier_present draws the work large */
+.deliver { border:1px solid var(--line); border-radius:12px; background:var(--card); overflow:hidden; user-select:none; }
+.deliver-head { display:flex; align-items:center; gap:8px; padding:11px 14px; font-size:13.5px; }
+.deliver-head .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); }
+.deliver-head .muted { color:var(--muted); }
+.deliver-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:0 14px 14px; }
+.shot { border-radius:9px; overflow:hidden; background:var(--deep); border:1px solid var(--line); }
+.shot .media { aspect-ratio:4/5; position:relative; }
+.shot img { width:100%; height:100%; object-fit:contain; display:block; }
+.shot .cap { padding:8px 10px; font-size:12.5px; display:flex; justify-content:space-between; color:var(--muted); }
+.shot .cap b { color:var(--fg); font-weight:500; }
+.note { padding:0 14px 12px; font-size:13.5px; color:#DCD6FF; }
+</style>
+</head>
+<body>
+<div class="col">
+	<div class="label">While it renders</div>
+	<div class="job">
+		<div class="thumb pending"></div>
+		<div class="body">
+			<div class="title"><span class="spinner"></span><span class="verb">Making</span> Night Bloom story v4</div>
+			<div class="meta">design · 1080 × 1920</div>
+		</div>
+	</div>
+
+	<div class="label">When it finishes</div>
+	<div class="job">
+		<div class="thumb"><img src="file:///Users/aliarain/Documents/Projects/studio-playground/.atelier/out/mvwni9ek-afb1fa/design.png"></div>
+		<div class="body">
+			<div class="title"><svg class="check" viewBox="0 0 14 14"><path d="M3 7.3l2.6 2.5L11 4.3"/></svg>Night Bloom story v2</div>
+			<div class="meta">design · 1080 × 1920 · 4s</div>
+			<div class="checks"><span class="chip warn"><svg viewBox="0 0 12 12"><path d="M6 2.5v4.2M6 9h.01"/></svg>Text in unsafe area: "09"</span><span class="chip ok"><svg viewBox="0 0 12 12"><path d="M2.5 6.3l2.3 2.2L9.5 3.8"/></svg>Not blank</span></div>
+		</div>
+		<div class="actions"><span class="btn">Open in gallery</span></div>
+	</div>
+	<div class="job">
+		<div class="thumb wide"><img src="file:///Users/aliarain/Documents/Projects/studio-playground/.atelier/out/mvwk7ee8-1d0d85/video.mp4.jpg" onerror="this.src='file:///Users/aliarain/Documents/Projects/studio-playground/.atelier/out/mvwk4xko-185920/design.png'"><span class="play"><svg viewBox="0 0 10 10"><path d="M2 1l7 4-7 4z"/></svg></span></div>
+		<div class="body">
+			<div class="title"><svg class="check" viewBox="0 0 14 14"><path d="M3 7.3l2.6 2.5L11 4.3"/></svg>Studio reel: v2</div>
+			<div class="meta">video · 1080 × 1920 · 15.6s · voiceover</div>
+			<div class="checks"><span class="chip ok"><svg viewBox="0 0 12 12"><path d="M2.5 6.3l2.3 2.2L9.5 3.8"/></svg>All checks passed</span></div>
+		</div>
+		<div class="actions"><span class="btn">Open in gallery</span></div>
+	</div>
+
+	<div class="label">When it is shown to you</div>
+	<div class="deliver">
+		<div class="deliver-head"><span class="dot"></span>Delivered <span class="muted">· 2 pieces</span></div>
+		<p class="note">Night Bloom story, final cut and the square post. The bloom now fills the frame and the type sits on real petals.</p>
+		<div class="deliver-grid">
+			<div class="shot"><div class="media"><img src="file:///Users/aliarain/Documents/Projects/studio-playground/.atelier/out/mvwnlob5-96f4dd/design.png"></div><div class="cap"><b>Night Bloom story v3</b>1080 × 1920</div></div>
+			<div class="shot"><div class="media"><img src="file:///Users/aliarain/Documents/Projects/studio-playground/.atelier/out/mvwkr2yz-99545f/design.png"></div><div class="cap"><b>Ember &amp; Oak fall menu</b>1080 × 1080</div></div>
+		</div>
+	</div>
+</div>
+</body>
+</html>
